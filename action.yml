@@ -1,6 +1,6 @@
 ---
-name: OpenHands Issue Resolver
-description: Automatically resolve GitHub issues by creating PRs with fixes using OpenHands agents
+name: AI Issue Resolver
+description: Automatically resolve GitHub issues by creating PRs with fixes using GLM-5.2
 author: xieyucheng123
 
 branding:
@@ -9,18 +9,18 @@ branding:
 
 inputs:
     llm-model:
-        description: LLM model to use for issue resolution.
+        description: LLM model to use
         required: false
-        default: openai/glm-5.2
+        default: glm-5.2
     llm-base-url:
-        description: LLM base URL for custom LLM endpoints
+        description: LLM base URL
         required: false
         default: 'https://api.modelarts-maas.com/v2'
     llm-api-key:
-        description: LLM API key (required)
+        description: LLM API key
         required: true
     github-token:
-        description: GitHub token for API access and creating PRs (required)
+        description: GitHub token
         required: true
     issue-number:
         description: Issue number to resolve
@@ -29,18 +29,6 @@ inputs:
         description: 'issue or pr'
         required: false
         default: 'issue'
-    max-iterations:
-        description: Maximum number of agent iterations
-        required: false
-        default: '50'
-    extensions-repo:
-        description: GitHub repository for issue-resolver plugin (owner/repo)
-        required: false
-        default: xieyucheng123/issue-resolver
-    extensions-version:
-        description: Git ref to use for issue-resolver plugin
-        required: false
-        default: main
 
 runs:
     using: composite
@@ -55,34 +43,25 @@ runs:
         - name: Checkout issue-resolver plugin
           uses: actions/checkout@v4
           with:
-              repository: ${{ inputs.extensions-repo }}
-              ref: ${{ inputs.extensions-version }}
+              repository: xieyucheng123/issue-resolver
+              ref: main
               path: issue-resolver-plugin
+              token: ${{ inputs.github-token }}
 
         - name: Set up Python
           uses: actions/setup-python@v5
           with:
               python-version: '3.12'
 
-        - name: Install uv
-          uses: astral-sh/setup-uv@v6
-          with:
-              enable-cache: true
-
-        - name: Install system dependencies
-          shell: bash
-          run: |
-              sudo apt-get update
-              sudo apt-get install -y gh tmux
-
         - name: Configure Git
           shell: bash
           run: |
-              git config --global user.name "openhands-bot"
-              git config --global user.email "bot@openhands.dev"
+              git config --global user.name "ai-bot"
+              git config --global user.email "bot@ai-resolver.dev"
 
         - name: Run Issue Resolver
           shell: bash
+          working-directory: target-repo
           env:
               LLM_MODEL: ${{ inputs.llm-model }}
               LLM_BASE_URL: ${{ inputs.llm-base-url }}
@@ -90,20 +69,6 @@ runs:
               GITHUB_TOKEN: ${{ inputs.github-token }}
               ISSUE_NUMBER: ${{ inputs.issue-number }}
               ISSUE_TYPE: ${{ inputs.issue-type }}
-              MAX_ITERATIONS: ${{ inputs.max-iterations }}
               REPO_NAME: ${{ github.repository }}
           run: |
-              cd target-repo
-              uv run --no-project --with openhands-sdk --with openhands-tools \
-                python ../issue-resolver-plugin/scripts/resolve_issue.py
-
-        - name: Upload logs
-          uses: actions/upload-artifact@v4
-          if: always()
-          with:
-              name: issue-resolver-logs
-              path: |
-                  target-repo/*.log
-                  target-repo/output/
-              retention-days: 7
-              if-no-files-found: ignore
+              python ../issue-resolver-plugin/scripts/resolve_issue.py
