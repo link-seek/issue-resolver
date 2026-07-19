@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
-Issue Resolver — Direct LLM approach.
+Issue Resolver — OpenHands SDK + LocalWorkspace.
 
-Reads a GitHub issue, uses GLM-5.2 to generate a unified diff,
-applies it, runs tests, and creates a pull request.
-
-No sandbox isolation issues — all file operations happen in the host workspace.
+Agent runs directly on the runner filesystem (no sandbox).
+Agent can multi-turn iterate: explore → edit → test → fix errors.
+Script handles all git operations after agent finishes.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import urllib.request
@@ -37,112 +35,13 @@ def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict
         return json.load(resp)
 
 
-def llm_chat(prompt: str, api_key: str, model: str, base_url: str) -> str:
-    """Call LLM via OpenAI-compatible API."""
-    url = f"{base_url}/chat/completions"
-    body = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are an expert software engineer. You output ONLY valid JSON, no markdown, no explanation."},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 8192,
-    }).encode()
-    req = urllib.request.Request(url, data=body, headers={
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }, method="POST")
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.load(resp)
-    return data["choices"][0]["message"]["content"]
-
-
-def collect_repo_context(max_files: int = 30) -> str:
-    """Collect relevant source files for LLM context."""
-    extensions = {".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".java",
-                  ".json", ".toml", ".yaml", ".yml", ".md", ".sql", ".sh", ".css"}
-    skip_dirs = {"target", "node_modules", ".git", "dist", "build", ".next", "__pycache__"}
-
-    files = []
-    for root, dirs, fs in os.walk("."):
-        dirs[:] = [d for d in dirs if d not in skip_dirs]
-        for f in fs:
-            p = Path(root) / f
-            if p.suffix in extensions and p.stat().st_size < 50000:
-                files.append(p)
-    files = sorted(files)[:max_files]
-
-    parts = []
-    for p in files:
-        try:
-            content = p.read_text(errors="replace")[:3000]
-            parts.append(f"--- {p} ---\n{content}")
-        except Exception:
-            pass
-    return "\n\n".join(parts)
-
-
-def extract_file_changes(llm_output: str) -> dict[str, str]:
-    """Extract file changes from LLM output. Returns {filepath: content}."""
-    # Strip markdown code fences
-    text = llm_output.strip()
-    if text.startswith("```"):
-        # Remove opening fence
-        first_nl = text.index("\n")
-        text = text[first_nl + 1:]
-        # Remove closing fence if present
-        if "```" in text:
-            text = text[:text.rindex("```")]
-        text = text.strip()
-
-    # Try to parse as JSON
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict) and "files" in data:
-            return data["files"]
-        if isinstance(data, dict):
-            return data
-    except json.JSONDecodeError as e:
-        print(f"JSON parse error: {e}")
-
-    # Try to find JSON object boundaries
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            data = json.loads(text[start:end + 1])
-            if isinstance(data, dict) and "files" in data:
-                return data["files"]
-            if isinstance(data, dict):
-                return data
-        except json.JSONDecodeError as e:
-            print(f"JSON extract error: {e}")
-
-    return {}
-
-
-def apply_file_changes(changes: dict[str, str]) -> int:
-    """Write file changes to disk. Returns number of files written."""
-    count = 0
-    for filepath, content in changes.items():
-        # Normalize path
-        filepath = filepath.lstrip("/")
-        if filepath.startswith("a/"):
-            filepath = filepath[2:]
-
-        path = Path(filepath)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
-        print(f"  Wrote {filepath} ({len(content)} bytes)")
-        count += 1
-    return count
-
-
 def run_tests() -> bool:
     if Path("Cargo.toml").exists():
         r = subprocess.run(["cargo", "test", "--", "--nocapture"],
-                         capture_output=True, text=True, timeout=300)
+                         capture_output=True, text=True, timeout=600)
+        print(f"cargo test exit: {r.returncode}")
+        if r.returncode != 0:
+            print(f"stderr: {r.stderr[:500]}")
         return r.returncode == 0
     if Path("package.json").exists():
         r = subprocess.run(["npm", "test", "--", "--passWithNoTests"],
@@ -153,7 +52,7 @@ def run_tests() -> bool:
 
 def main():
     print("=" * 60)
-    print("Issue Resolver (Direct LLM)")
+    print("Issue Resolver (OpenHands SDK + LocalWorkspace)")
     print("=" * 60)
 
     api_key = get_env("LLM_API_KEY")
@@ -164,10 +63,8 @@ def main():
     issue_type = get_env("ISSUE_TYPE", "issue")
     repo_name = get_env("REPO_NAME")
 
-    # Strip provider prefix for API call
-    api_model = model.split("/", 1)[-1] if "/" in model else model
-
-    print(f"Repo: {repo_name}, Issue: #{issue_number}, Model: {api_model}")
+    print(f"Repo: {repo_name}, Issue: #{issue_number}, Model: {model}")
+    print(f"CWD: {os.getcwd()}")
 
     # Fetch issue
     issue = gh_api("GET", f"{repo_name}/issues/{issue_number}", github_token)
@@ -175,105 +72,156 @@ def main():
     body = issue.get("body", "") or "(no description)"
     print(f"Title: {title}")
 
+    # Fetch comments
+    comments = gh_api("GET", f"{repo_name}/issues/{issue_number}/comments", github_token)
+    comments_text = ""
+    if comments:
+        comments_text = "\n\n## Additional Context from Comments:\n"
+        for c in comments:
+            comments_text += f"\n**{c['user']['login']}**:\n{c['body']}\n"
+
     # Comment: started
     gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-           {"body": "🤖 Agent started working on this issue using GLM-5.2."})
+           {"body": "🤖 OpenHands agent started working on this issue using GLM-5.2."})
 
-    # Collect repo context
-    ctx = collect_repo_context()
-    print(f"Collected {len(ctx)} chars of repo context")
+    # Record state before agent
+    commit_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    print(f"Commit before: {commit_before[:12]}")
+    print(f"Git status before: {subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True).stdout}")
 
-    # Build prompt
-    prompt = f"""## Issue
+    # Build prompt — tell agent NOT to use git
+    task_prompt = f"""You are a software engineer working on the repository: {repo_name}
+
+## Issue to Resolve
 **Title**: {title}
 **Description**:
 {body}
+{comments_text}
 
-## Current Code
-Here are the relevant files in the repository:
+## Your Task
+1. Explore the codebase to understand the project structure (use ls, cat, find)
+2. Identify the root cause or what needs to be implemented
+3. Make the necessary code changes to resolve this issue
+4. Run the tests to verify your changes work
+5. If tests fail, analyze the errors and fix your changes — iterate until tests pass
+6. Ensure code quality and follow existing code style
 
-{ctx}
-
-## Task
-Generate code changes to fix this issue. Output a JSON object where keys are file paths and values are the FULL file content (not a diff).
-
-Example format:
-```json
-{{
-  "path/to/file.rs": "full file content here",
-  "path/to/new_file.rs": "content of new file"
-}}
-```
-
-Rules:
-- Include ONLY files that need to be created or modified
-- Each value must be the COMPLETE file content, not a diff
+## Important
 - Make minimal, focused changes
-- Follow existing code style
-- Output ONLY the JSON, no explanation
+- Follow existing code conventions
+- Don't break existing functionality
+- **DO NOT run any git commands** (git add, git commit, git checkout, git push, etc.)
+- **DO NOT use git at all** — just create/modify files directly
+- The CI system will handle git operations automatically
+
+Start by exploring the project structure, then implement the fix, then run tests to verify.
 """
 
-    print("Calling GLM-5.2...")
+    # Create agent
+    from openhands.sdk import LLM, Agent, Conversation, get_logger
+    from openhands.sdk.workspace import LocalWorkspace
+    from openhands.tools.preset.default import get_default_condenser, get_default_tools
+
+    logger = get_logger(__name__)
+    logger.info("Creating OpenHands agent with LocalWorkspace...")
+
+    llm_config = {
+        "model": model,
+        "api_key": api_key,
+        "usage_id": "issue_resolver",
+        "drop_params": True,
+    }
+    if base_url:
+        llm_config["base_url"] = base_url
+
+    llm = LLM(**llm_config)
+
+    agent = Agent(
+        llm=llm,
+        tools=get_default_tools(enable_browser=False),
+        system_prompt_kwargs={"cli_mode": True},
+        condenser=get_default_condenser(
+            llm=llm.model_copy(update={"usage_id": "condenser"})
+        ),
+    )
+
+    cwd = os.getcwd()
+    workspace = LocalWorkspace(working_dir=cwd)
+    print(f"LocalWorkspace working_dir: {workspace.working_dir}")
+
+    secrets = {
+        "LLM_API_KEY": api_key,
+        "GITHUB_TOKEN": github_token,
+    }
+
+    logger.info("Starting agent conversation...")
+    conversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        secrets=secrets,
+    )
+
     try:
-        response = llm_chat(prompt, api_key, api_model, base_url)
+        conversation.send_message(task_prompt)
+        conversation.run()
+        logger.info("Agent completed successfully")
     except Exception as e:
-        print(f"LLM call failed: {e}")
+        logger.error(f"Agent failed: {type(e).__name__}: {e}")
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-               {"body": f"❌ LLM call failed: {e}"})
+               {"body": f"❌ Agent error: {e}"})
         sys.exit(1)
 
-    print(f"LLM response: {len(response)} chars")
-    print(f"Response preview: {response[:300]}...")
+    # Check state after agent
+    commit_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    status_after = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True
+    ).stdout.strip()
 
-    # Extract file changes
-    changes = extract_file_changes(response)
-    if not changes:
-        print("No valid file changes in LLM response")
+    print(f"Commit after: {commit_after[:12]}")
+    print(f"Git status after:\n{status_after}")
+    print(f"HEAD changed: {commit_before != commit_after}")
+    print(f"Has uncommitted: {bool(status_after)}")
+
+    has_uncommitted = bool(status_after)
+    has_new_commits = commit_before != commit_after
+
+    if not has_new_commits and not has_uncommitted:
+        print("No changes detected")
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-               {"body": "⚠️ Agent could not generate valid changes. Please handle manually."})
+               {"body": "⚠️ Agent analyzed the issue but no code changes were made."})
         sys.exit(0)
 
-    print(f"Applying {len(changes)} file changes:")
-    count = apply_file_changes(changes)
-    if count == 0:
-        print("No files written")
-        gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-               {"body": "⚠️ Agent analyzed the issue but no changes were needed."})
-        sys.exit(0)
-
-    # Check changes
-    r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
-    if not r.stdout.strip():
-        print("No changes after applying diff")
-        gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-               {"body": "⚠️ Agent analyzed the issue but no changes were needed."})
-        sys.exit(0)
-
-    print(f"Changes:\n{r.stdout}")
-
-    # Create branch, commit, push
+    # Create branch
     branch = f"agent/fix-{issue_type}-{issue_number}"
     subprocess.run(["git", "checkout", "-b", branch], check=True)
-    subprocess.run(["git", "add", "-A"], check=True)
-    subprocess.run(["git", "commit", "-m", f"Fix #{issue_number}: {title}\n\nGenerated by AI agent using GLM-5.2."], check=True)
 
-    # Push using PAT
-    remote_url = subprocess.run(["git", "remote", "get-url", "origin"],
-                              capture_output=True, text=True).stdout.strip()
-    # Use token in URL for push
+    # Commit any uncommitted changes (agent should have left files changed, not committed)
+    if has_uncommitted:
+        subprocess.run(["git", "add", "-A"], check=True)
+        subprocess.run(["git", "commit", "-m",
+                       f"Fix #{issue_number}: {title}\n\nGenerated by OpenHands agent using GLM-5.2."],
+                       check=True)
+
+    # If agent committed to main (shouldn't happen but just in case), the branch
+    # already has those commits. We need to reset main — but branch is already
+    # checked out so we're fine.
+
+    # Push
     push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
     subprocess.run(["git", "push", push_url, branch], check=True)
 
     # Run tests
     print("Running tests...")
     tests_ok = run_tests()
-    print(f"Tests: {'passed' if tests_ok else 'failed'}")
 
     # Create PR
-    changes_summary = "\n".join(f"- `{f}`" for f in changes.keys())
     pr = gh_api("POST", f"{repo_name}/pulls", github_token, {
         "title": f"Fix #{issue_number}: {title}",
-        "body": f"## Automated Fix\n\n**Files changed:**\n{changes_summary}\n\nCloses #{issue_number}\n\n---\nGenerated by AI agent using GLM-5.2 via MAAS",
+        "body": f"## Automated Fix\n\nAgent: OpenHands SDK + LocalWorkspace\nModel: GLM-5.2 via MAAS\n\nCloses #{issue_number}",
         "head": branch,
         "base": "main",
     })
