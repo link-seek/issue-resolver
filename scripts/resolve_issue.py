@@ -85,37 +85,39 @@ def collect_repo_context(max_files: int = 30) -> str:
 
 def extract_file_changes(llm_output: str) -> dict[str, str]:
     """Extract file changes from LLM output. Returns {filepath: content}."""
-    # Try to parse as JSON directly
+    # Strip markdown code fences
+    text = llm_output.strip()
+    if text.startswith("```"):
+        # Remove opening fence
+        first_nl = text.index("\n")
+        text = text[first_nl + 1:]
+        # Remove closing fence if present
+        if "```" in text:
+            text = text[:text.rindex("```")]
+        text = text.strip()
+
+    # Try to parse as JSON
     try:
-        data = json.loads(llm_output)
+        data = json.loads(text)
         if isinstance(data, dict) and "files" in data:
             return data["files"]
         if isinstance(data, dict):
-            # Assume keys are file paths
             return data
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}")
 
-    # Try to find JSON in code blocks
-    m = re.search(r"```(?:json)?\n(.*?)```", llm_output, re.DOTALL)
-    if m:
+    # Try to find JSON object boundaries
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
         try:
-            data = json.loads(m.group(1))
+            data = json.loads(text[start:end + 1])
             if isinstance(data, dict) and "files" in data:
                 return data["files"]
             if isinstance(data, dict):
                 return data
-        except json.JSONDecodeError:
-            pass
-
-    # Try to find JSON object in the text
-    m = re.search(r'\{[^{]*"files".*\}', llm_output, re.DOTALL)
-    if m:
-        try:
-            data = json.loads(m.group(0))
-            return data.get("files", {})
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as e:
+            print(f"JSON extract error: {e}")
 
     return {}
 
