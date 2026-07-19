@@ -43,7 +43,7 @@ def llm_chat(prompt: str, api_key: str, model: str, base_url: str) -> str:
     body = json.dumps({
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are an expert software engineer. You output ONLY a unified diff, nothing else."},
+            {"role": "system", "content": "You are an expert software engineer. You output ONLY valid JSON, no markdown, no explanation."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.3,
@@ -83,41 +83,58 @@ def collect_repo_context(max_files: int = 30) -> str:
     return "\n\n".join(parts)
 
 
-def extract_diff(llm_output: str) -> str:
-    """Extract unified diff from LLM output."""
-    # Try to find diff in code blocks
-    m = re.search(r"```(?:diff)?\n(.*?)```", llm_output, re.DOTALL)
+def extract_file_changes(llm_output: str) -> dict[str, str]:
+    """Extract file changes from LLM output. Returns {filepath: content}."""
+    # Try to parse as JSON directly
+    try:
+        data = json.loads(llm_output)
+        if isinstance(data, dict) and "files" in data:
+            return data["files"]
+        if isinstance(data, dict):
+            # Assume keys are file paths
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    # Try to find JSON in code blocks
+    m = re.search(r"```(?:json)?\n(.*?)```", llm_output, re.DOTALL)
     if m:
-        return m.group(1).strip()
-    # Otherwise look for diff headers
-    lines = llm_output.split("\n")
-    diff_lines = []
-    in_diff = False
-    for line in lines:
-        if line.startswith("diff --git") or line.startswith("--- ") or line.startswith("+++ "):
-            in_diff = True
-        if in_diff:
-            diff_lines.append(line)
-    if diff_lines:
-        return "\n".join(diff_lines)
-    return llm_output.strip()
+        try:
+            data = json.loads(m.group(1))
+            if isinstance(data, dict) and "files" in data:
+                return data["files"]
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    # Try to find JSON object in the text
+    m = re.search(r'\{[^{]*"files".*\}', llm_output, re.DOTALL)
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            return data.get("files", {})
+        except json.JSONDecodeError:
+            pass
+
+    return {}
 
 
-def apply_diff(diff: str) -> bool:
-    """Apply unified diff using git apply."""
-    diff_path = "/tmp/agent_fix.diff"
-    Path(diff_path).write_text(diff)
-    result = subprocess.run(["git", "apply", "--whitespace=fix", diff_path],
-                          capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"git apply failed: {result.stderr}")
-        # Try with --3way
-        result = subprocess.run(["git", "apply", "--3way", diff_path],
-                              capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"git apply --3way also failed: {result.stderr}")
-            return False
-    return True
+def apply_file_changes(changes: dict[str, str]) -> int:
+    """Write file changes to disk. Returns number of files written."""
+    count = 0
+    for filepath, content in changes.items():
+        # Normalize path
+        filepath = filepath.lstrip("/")
+        if filepath.startswith("a/"):
+            filepath = filepath[2:]
+
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        print(f"  Wrote {filepath} ({len(content)} bytes)")
+        count += 1
+    return count
 
 
 def run_tests() -> bool:
@@ -176,12 +193,22 @@ Here are the relevant files in the repository:
 {ctx}
 
 ## Task
-Generate a unified diff to fix this issue. The diff should:
+Generate code changes to fix this issue. Output a JSON object where keys are file paths and values are the FULL file content (not a diff).
+
+Example format:
+```json
+{{
+  "path/to/file.rs": "full file content here",
+  "path/to/new_file.rs": "content of new file"
+}}
+```
+
+Rules:
+- Include ONLY files that need to be created or modified
+- Each value must be the COMPLETE file content, not a diff
 - Make minimal, focused changes
 - Follow existing code style
-- Not break existing functionality
-
-Output ONLY the unified diff (as `diff --git a/... b/...` format), no explanation.
+- Output ONLY the JSON, no explanation
 """
 
     print("Calling GLM-5.2...")
@@ -194,22 +221,23 @@ Output ONLY the unified diff (as `diff --git a/... b/...` format), no explanatio
         sys.exit(1)
 
     print(f"LLM response: {len(response)} chars")
+    print(f"Response preview: {response[:300]}...")
 
-    # Extract and apply diff
-    diff = extract_diff(response)
-    if not diff or "diff --git" not in diff:
-        print("No valid diff in LLM response")
+    # Extract file changes
+    changes = extract_file_changes(response)
+    if not changes:
+        print("No valid file changes in LLM response")
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-               {"body": "⚠️ Agent could not generate a valid fix. Please handle manually."})
+               {"body": "⚠️ Agent could not generate valid changes. Please handle manually."})
         sys.exit(0)
 
-    print(f"Diff:\n{diff[:500]}...")
-
-    if not apply_diff(diff):
-        print("Failed to apply diff")
+    print(f"Applying {len(changes)} file changes:")
+    count = apply_file_changes(changes)
+    if count == 0:
+        print("No files written")
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-               {"body": "⚠️ Agent generated a fix but it could not be applied automatically."})
-        sys.exit(1)
+               {"body": "⚠️ Agent analyzed the issue but no changes were needed."})
+        sys.exit(0)
 
     # Check changes
     r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
@@ -240,9 +268,10 @@ Output ONLY the unified diff (as `diff --git a/... b/...` format), no explanatio
     print(f"Tests: {'passed' if tests_ok else 'failed'}")
 
     # Create PR
+    changes_summary = "\n".join(f"- `{f}`" for f in changes.keys())
     pr = gh_api("POST", f"{repo_name}/pulls", github_token, {
         "title": f"Fix #{issue_number}: {title}",
-        "body": f"## Automated Fix\n\n{diff[:2000]}\n\nCloses #{issue_number}\n\n---\nGenerated by AI agent using GLM-5.2 via MAAS",
+        "body": f"## Automated Fix\n\n**Files changed:**\n{changes_summary}\n\nCloses #{issue_number}\n\n---\nGenerated by AI agent using GLM-5.2 via MAAS",
         "head": branch,
         "base": "main",
     })
