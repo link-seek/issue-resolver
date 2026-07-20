@@ -96,7 +96,7 @@ def main():
         c["body"].strip().lower() in ("confirm", "确认", "approved", "ok", "yes", "y")
         for c in comments
     )
-    bot_posted_plan = any("📋 Plan" in c.get("body", "") for c in comments)
+    bot_posted_plan = any("Implementation Plan" in c.get("body", "") for c in comments)
 
     if not bot_posted_plan:
         # Phase 1: Agent assesses confidence and either plans or implements directly
