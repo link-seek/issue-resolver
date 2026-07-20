@@ -93,8 +93,7 @@ def main():
 
     # Check if user confirmed the plan in comments
     user_confirmed = any(
-        c["user"]["login"] != "xieyucheng123" and
-        ("confirm" in c["body"].lower() or "确认" in c["body"] or "approved" in c["body"].lower())
+        c["body"].strip().lower() in ("confirm", "确认", "approved", "ok", "yes", "y")
         for c in comments
     )
     bot_posted_plan = any("📋 Plan" in c.get("body", "") for c in comments)
