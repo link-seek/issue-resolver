@@ -35,6 +35,65 @@ def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict
         return json.load(resp)
 
 
+def analyze_db_risk(db_files: list[str]) -> str:
+    import re
+
+    risk_patterns = [
+        (re.compile(r'DROP\s+TABLE', re.I), '🔴 Critical', 'DROP TABLE — permanent data loss'),
+        (re.compile(r'DROP\s+COLUMN', re.I), '🔴 Critical', 'DROP COLUMN — permanent data loss'),
+        (re.compile(r'TRUNCATE', re.I), '🔴 Critical', 'TRUNCATE — permanent data loss'),
+        (re.compile(r'ALTER\s+COLUMN.*TYPE', re.I), '🟠 High', 'ALTER COLUMN TYPE — table rewrite'),
+        (re.compile(r'SET\s+NOT\s+NULL', re.I), '🟠 High', 'SET NOT NULL — exclusive lock + full scan'),
+        (re.compile(r'RENAME\s+COLUMN', re.I), '🟠 High', 'RENAME COLUMN — breaks running app'),
+        (re.compile(r'RENAME\s+TABLE', re.I), '🟠 High', 'RENAME TABLE — breaks running app'),
+        (re.compile(r'CREATE\s+INDEX(?!.*CONCURRENTLY)', re.I), '🟠 High', 'CREATE INDEX without CONCURRENTLY — blocks writes'),
+        (re.compile(r'ADD\s+FOREIGN\s+KEY', re.I), '🟡 Medium', 'ADD FOREIGN KEY — validates all rows under lock'),
+        (re.compile(r'ADD\s+UNIQUE', re.I), '🟡 Medium', 'ADD UNIQUE constraint — validates all rows under lock'),
+        (re.compile(r'DROP\s+INDEX', re.I), '🟡 Medium', 'DROP INDEX — query plan regression'),
+        (re.compile(r'ADD\s+COLUMN', re.I), '🟢 Safe', 'ADD COLUMN — check if nullable'),
+    ]
+
+    findings = []
+    for filepath in db_files:
+        try:
+            with open(filepath, 'r') as f:
+                content = f.read()
+        except FileNotFoundError:
+            findings.append((filepath, '⚠️', 'File not found (may be in migration crate)'))
+            continue
+
+        for pattern, level, desc in risk_patterns:
+            matches = pattern.findall(content)
+            if matches:
+                findings.append((filepath, level, desc))
+
+    if not findings:
+        findings.append(('-', '🟢 Safe', 'No dangerous patterns detected'))
+
+    counts = {'🔴 Critical': 0, '🟠 High': 0, '🟡 Medium': 0, '🟢 Safe': 0}
+    for _, level, _ in findings:
+        key = level.split(' ', 1)[1] if ' ' in level else level
+        if key in counts:
+            counts[key] += 1
+
+    lines = ["⚠️ Database changes detected — manual review required", ""]
+    lines.append("## Changed Files")
+    for f in db_files:
+        ftype = "migration" if "migration" in f.lower() else "entity" if "entity" in f.lower() else "schema"
+        lines.append(f"- `{f}` ({ftype})")
+    lines.append("")
+    lines.append("## Risk Analysis")
+    lines.append("| Risk | File | Detail |")
+    lines.append("|------|------|--------|")
+    for filepath, level, desc in findings:
+        short = filepath.split('/')[-1]
+        lines.append(f"| {level} | {short} | {desc} |")
+    lines.append("")
+    lines.append(f"**Summary**: {counts['🔴 Critical']} critical, {counts['🟠 High']} high, {counts['🟡 Medium']} medium, {counts['🟢 Safe']} safe")
+
+    return "\n".join(lines)
+
+
 def run_tests() -> bool:
     if Path("Cargo.toml").exists():
         r = subprocess.run(["cargo", "test", "--", "--nocapture"],
@@ -312,13 +371,46 @@ Start implementing now.
     pr_num = pr["number"]
     print(f"PR created: {pr_url}")
 
-    # Enable auto-merge (squash) so PR merges automatically when all checks pass
-    try:
-        gh_api("PUT", f"{repo_name}/pulls/{pr_num}/auto-merge", github_token,
-               {"merge_method": "squash"})
-        print(f"Auto-merge enabled for PR #{pr_num}")
-    except Exception as e:
-        print(f"Could not enable auto-merge: {e}")
+    # Check for database changes and decide auto-merge
+    import re
+    db_pattern = re.compile(
+        r'(migration|\.sql$|/schema[/.]|/database[/.]|\.prisma$|alembic|diesel|/entit)',
+        re.IGNORECASE
+    )
+
+    pr_files = []
+    page = 1
+    while True:
+        batch = gh_api("GET", f"{repo_name}/pulls/{pr_num}/files?page={page}&per_page=100", github_token)
+        if not batch:
+            break
+        pr_files.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+
+    changed_filenames = [f["filename"] for f in pr_files]
+    db_files = [f for f in changed_filenames if db_pattern.search(f)]
+
+    if db_files:
+        print(f"DB changes detected: {db_files}")
+        risk_report = analyze_db_risk(db_files)
+
+        gh_api("POST", f"{repo_name}/issues/{pr_num}/comments", github_token, {
+            "body": risk_report
+        })
+
+        gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token, {
+            "body": f"⚠️ PR #{pr_num} contains database changes. Manual review required before merge.\n\nPR: {pr_url}"
+        })
+        print(f"DB changes detected, auto-merge NOT enabled for PR #{pr_num}")
+    else:
+        try:
+            gh_api("PUT", f"{repo_name}/pulls/{pr_num}/auto-merge", github_token,
+                   {"merge_method": "squash"})
+            print(f"Auto-merge enabled for PR #{pr_num}")
+        except Exception as e:
+            print(f"Could not enable auto-merge: {e}")
 
     # Comment on issue
     emoji = "✅" if tests_ok else "⚠️"
