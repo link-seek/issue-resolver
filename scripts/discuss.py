@@ -189,12 +189,14 @@ def main():
     screenshot_results = ""
     if enable_browsing:
         import re
-        urls = re.findall(r'https?://[^\s<>"\']+', body + " " + comment_history)
-        # Also try xieyucheng.top if mentioned
-        if "xieyucheng.top" in (title + body + comment_history).lower():
-            urls.append("https://xieyucheng.top")
+        # Prioritize URLs from the latest @oh comment, then discussion body
+        all_text = user_question + " " + body + " " + comment_history
+        urls = re.findall(r'https?://[^\s<>"\')\]]+', all_text)
+        # Deduplicate while preserving order
+        seen = set()
+        urls = [u for u in urls if not (u in seen or seen.add(u))]
 
-        for url in urls[:3]:  # Limit to 3 URLs
+        for url in urls[:5]:  # Limit to 5 URLs
             print(f"Browsing: {url}")
             content = obscura_fetch(url, "text")
             browse_results += f"\n\n## Browsed: {url}\n{content}\n"
