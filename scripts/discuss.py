@@ -339,6 +339,7 @@ def main():
     print("Sending to LLM...")
 
     # Step 4: Call LLM via temp file (avoids "Argument list too long")
+    # The LLM script writes the final response to a separate file
     import tempfile, json
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump({
@@ -349,7 +350,9 @@ def main():
         }, f, ensure_ascii=False)
         config_path = f.name
 
-    llm_script = """
+    response_path = config_path + ".response"
+
+    llm_script = f"""
 import json, sys
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.tool import Tool
@@ -365,6 +368,31 @@ agent = Agent(llm=llm, tools=tools)
 conversation = Conversation(agent=agent)
 conversation.send_message(cfg["prompt"])
 conversation.run()
+
+# Extract the last assistant message from the conversation
+response_text = ""
+try:
+    messages = conversation.get_messages()
+    for msg in reversed(messages):
+        if hasattr(msg, 'role') and msg.role == 'assistant':
+            response_text = msg.content if hasattr(msg, 'content') else str(msg)
+            break
+except Exception:
+    pass
+
+# Fallback: use the conversation's last event
+if not response_text:
+    try:
+        events = conversation.get_events()
+        for evt in reversed(events):
+            if hasattr(evt, 'message') and hasattr(evt.message, 'content'):
+                response_text = evt.message.content
+                break
+    except Exception:
+        pass
+
+with open(sys.argv[2], 'w') as f:
+    f.write(response_text or "(LLM returned empty response)")
 """
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         f.write(llm_script)
@@ -374,21 +402,33 @@ conversation.run()
         ["uv", "run", "--no-project",
          "--with", "openhands-sdk",
          "--with", "openhands-tools",
-         "python", script_path, config_path],
+         "python", script_path, config_path, response_path],
         capture_output=True, text=True,
         env={**os.environ},
         cwd=os.getcwd(),
     )
 
+    # Read LLM response from file
+    try:
+        with open(response_path) as f:
+            llm_response = f.read().strip()
+    except FileNotFoundError:
+        llm_response = ""
+
+    if not llm_response:
+        # Fallback: extract from stdout
+        raw_output = result.stdout + "\n" + result.stderr
+        print(raw_output)
+        llm_response = extract_llm_response(raw_output)
+    else:
+        print(f"LLM response extracted ({len(llm_response)} chars)")
+
     os.unlink(config_path)
     os.unlink(script_path)
-
-    raw_output = result.stdout + "\n" + result.stderr
-    print(raw_output)
-
-    # Extract LLM final response from raw output
-    # The OpenHands SDK prints the agent's messages; we want the last assistant message
-    llm_response = extract_llm_response(raw_output)
+    try:
+        os.unlink(response_path)
+    except FileNotFoundError:
+        pass
 
     # Step 5: Build reply with search and browse evidence
     reply_parts = ["## 技术方案建议\n"]
