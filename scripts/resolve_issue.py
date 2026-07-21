@@ -151,7 +151,7 @@ def main():
 
     # Check if user confirmed the plan in comments
     user_confirmed = any(
-        c["body"].strip().lower() in ("confirm", "确认", "approved", "ok", "yes", "y")
+        any(kw in c["body"].strip().lower() for kw in ("confirm", "确认", "approved"))
         for c in comments
     )
     bot_posted_plan = any("Implementation Plan" in c.get("body", "") for c in comments)
