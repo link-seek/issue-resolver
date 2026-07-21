@@ -5,6 +5,7 @@ Tools available to the LLM via terminal:
   - Tavily search: curl -sS "https://api.tavily.com/search" -H "Content-Type: application/json" -d '{"api_key":"KEY","query":"QUERY","max_results":5}'
   - Obscura browse: obscura fetch <url> --dump text
   - Obscura HTML: obscura fetch <url> --dump html
+  - Playwright screenshot: npx playwright screenshot <url> <output.png> --full-page
 """
 
 import json
@@ -116,6 +117,32 @@ def obscura_fetch(url: str, mode: str = "text") -> str:
         return f"Obscura error: {e}"
 
 
+def playwright_screenshot(url: str, output_path: str = "screenshots") -> str:
+    """Take a screenshot of a URL using Playwright."""
+    import os
+    os.makedirs(output_path, exist_ok=True)
+    # Sanitize URL to filename
+    safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_").replace(":", "_")
+    screenshot_file = os.path.join(output_path, f"{safe_name}.png")
+
+    try:
+        result = subprocess.run(
+            ["npx", "playwright", "screenshot", url, screenshot_file,
+             "--full-page", "--wait-for-timeout", "3000"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if os.path.exists(screenshot_file):
+            size = os.path.getsize(screenshot_file)
+            print(f"Screenshot saved: {screenshot_file} ({size} bytes)")
+            return f"Screenshot saved to {screenshot_file} ({size} bytes)"
+        else:
+            return f"Playwright screenshot failed: {result.stderr[:500]}"
+    except subprocess.TimeoutExpired:
+        return f"Playwright timed out for {url}"
+    except Exception as e:
+        return f"Playwright error: {e}"
+
+
 def main():
     token = os.environ.get("GITHUB_TOKEN", "")
     discussion_node_id = os.environ.get("DISCUSSION_NODE_ID", "")
@@ -159,6 +186,7 @@ def main():
 
     # Step 2: Try to fetch any URLs mentioned in the discussion
     browse_results = ""
+    screenshot_results = ""
     if enable_browsing:
         import re
         urls = re.findall(r'https?://[^\s<>"\']+', body + " " + comment_history)
@@ -171,6 +199,12 @@ def main():
             content = obscura_fetch(url, "text")
             browse_results += f"\n\n## Browsed: {url}\n{content}\n"
             print(f"Content: {content[:200]}...")
+
+            # Take screenshot
+            print(f"Screenshot: {url}")
+            shot_result = playwright_screenshot(url)
+            screenshot_results += f"- {url}: {shot_result}\n"
+            print(f"Screenshot result: {shot_result}")
 
     # Step 3: Build prompt with search and browse results
     prompt = f"""你是一个技术架构师。用户在 GitHub Discussion 中提问，请分析并回复。
@@ -252,7 +286,10 @@ conversation.run()
     reply_parts.append(f"**搜索结果**:\n{search_results[:1000]}\n")
     if browse_results:
         reply_parts.append(f"\n### 网站浏览结果\n{browse_results[:2000]}\n")
-    reply_parts.append("\n🤖 由 GLM-5.2 生成 | Tavily 搜索 + Obscura 浏览")
+    if screenshot_results:
+        reply_parts.append(f"\n### 截图\n{screenshot_results}\n")
+        reply_parts.append("截图已上传为 GitHub Actions artifact，可在 workflow run 页面下载。\n")
+    reply_parts.append("\n🤖 由 GLM-5.2 生成 | Tavily 搜索 + Obscura 浏览 + Playwright 截图")
 
     reply_body = "\n".join(reply_parts)
     reply_discussion(token, discussion_node_id, reply_body)
