@@ -75,20 +75,20 @@ def analyze_db_risk(db_files: list[str]) -> str:
         if level in counts:
             counts[level] += 1
 
-    lines = ["⚠️ Database changes detected — manual review required", ""]
-    lines.append("## Changed Files")
+    lines = ["⚠️ 检测到数据库变更 — 需要人工审查", ""]
+    lines.append("## 变更文件")
     for f in db_files:
-        ftype = "migration" if "migration" in f.lower() else "entity" if "entity" in f.lower() else "schema"
+        ftype = "迁移" if "migration" in f.lower() else "实体" if "entity" in f.lower() else "schema"
         lines.append(f"- `{f}` ({ftype})")
     lines.append("")
-    lines.append("## Risk Analysis")
-    lines.append("| Risk | File | Detail |")
-    lines.append("|------|------|--------|")
+    lines.append("## 风险分析")
+    lines.append("| 风险 | 文件 | 说明 |")
+    lines.append("|------|------|------|")
     for filepath, level, desc in findings:
         short = filepath.split('/')[-1]
         lines.append(f"| {level} | {short} | {desc} |")
     lines.append("")
-    lines.append(f"**Summary**: {counts['🔴 Critical']} critical, {counts['🟠 High']} high, {counts['🟡 Medium']} medium, {counts['🟢 Safe']} safe")
+    lines.append(f"**汇总**: {counts['🔴 Critical']} 严重, {counts['🟠 High']} 高, {counts['🟡 Medium']} 中, {counts['🟢 Safe']} 安全")
 
     return "\n".join(lines)
 
@@ -140,7 +140,7 @@ def main():
 
     # Comment: started
     gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-           {"body": "🤖 OpenHands agent started working on this issue using GLM-5.2."})
+           {"body": "🤖 OpenHands 智能体已开始处理此 Issue，使用 GLM-5.2 模型。"})
 
     # Record state before agent
     commit_before = subprocess.run(
@@ -400,7 +400,7 @@ Start implementing now.
         })
 
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token, {
-            "body": f"⚠️ PR #{pr_num} contains database changes. Manual review required before merge.\n\nPR: {pr_url}"
+            "body": f"⚠️ PR #{pr_num} 包含数据库变更，合并前需要人工审查。\n\nPR: {pr_url}"
         })
         print(f"DB changes detected, auto-merge NOT enabled for PR #{pr_num}")
     else:
@@ -420,7 +420,7 @@ Start implementing now.
     # Comment on issue
     emoji = "✅" if tests_ok else "⚠️"
     gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-           {"body": f"{emoji} Agent created PR #{pr_num}: {pr_url}\n\n**Tests**: {'passed' if tests_ok else 'failed'}\n**Model**: GLM-5.2"})
+           {"body": f"{emoji} 已创建 PR #{pr_num}: {pr_url}\n\n**测试**: {'通过' if tests_ok else '失败'}\n**模型**: GLM-5.2"})
 
     print(f"\n✅ Done! PR: {pr_url}")
 
