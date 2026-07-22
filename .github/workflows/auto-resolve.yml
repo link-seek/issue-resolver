@@ -1,0 +1,125 @@
+name: Auto-resolve
+
+on:
+  workflow_call:
+    secrets:
+      LLM_API_KEY:
+        required: true
+      LLM_BASE_URL:
+        required: false
+      LLM_MODEL:
+        required: false
+      PAT_TOKEN:
+        required: true
+      TAVILY_API_KEY:
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  discussions: write
+
+jobs:
+  resolve:
+    if: |
+      github.event.label.name == 'fix-me' ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@oh') &&
+        (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Obscura
+        run: |
+          curl -L https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz -o /tmp/obscura.tar.gz
+          tar xzf /tmp/obscura.tar.gz -C /usr/local/bin/
+          chmod +x /usr/local/bin/obscura
+          obscura --version || true
+
+      - uses: link-seek/issue-resolver@main
+        with:
+          llm-model: ${{ secrets.LLM_MODEL || 'openai/glm-5.2' }}
+          llm-base-url: ${{ secrets.LLM_BASE_URL || 'https://api.modelarts-maas.com/v2' }}
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
+          github-token: ${{ secrets.PAT_TOKEN }}
+          issue-number: ${{ github.event.issue.number }}
+          issue-type: issue
+        env:
+          SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          AGENT_ENABLE_BROWSING: "true"
+
+  discuss:
+    if: |
+      (github.event_name == 'discussion_comment' && contains(github.event.comment.body, '@oh') &&
+        (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER')) ||
+      (github.event_name == 'discussion' && contains(github.event.discussion.body, '@oh') &&
+        (github.event.discussion.author_association == 'OWNER' || github.event.discussion.author_association == 'COLLABORATOR' || github.event.discussion.author_association == 'MEMBER'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Obscura
+        run: |
+          curl -L https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz -o /tmp/obscura.tar.gz
+          tar xzf /tmp/obscura.tar.gz -C /usr/local/bin/
+          chmod +x /usr/local/bin/obscura
+          obscura --version || true
+
+      - name: Install Playwright
+        run: |
+          npx playwright install --with-deps chromium
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          path: target-repo
+
+      - name: Checkout issue-resolver scripts
+        uses: actions/checkout@v4
+        with:
+          repository: link-seek/issue-resolver
+          ref: main
+          path: issue-resolver-scripts
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Run Discussion Agent
+        shell: bash
+        working-directory: target-repo
+        env:
+          LLM_MODEL: ${{ secrets.LLM_MODEL || 'openai/glm-5.2' }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://api.modelarts-maas.com/v2' }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          AGENT_ENABLE_BROWSING: "true"
+          DISCUSSION_NODE_ID: ${{ github.event.discussion.node_id }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          uv run --no-project --with openhands-sdk --with openhands-tools \
+            python ../issue-resolver-scripts/scripts/discuss.py
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discuss-logs
+          path: target-repo/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discuss-screenshots
+          path: target-repo/screenshots/*.png
+          retention-days: 7
+          if-no-files-found: ignore
