@@ -152,7 +152,7 @@ def main():
         f.write(prompt)
         prompt_file = f.name
 
-    agent_script = """import os, sys, io, re
+    agent_script = """import os, sys, io, re, json
 
 # Capture stdout to extract LLM response
 captured = io.StringIO()
@@ -187,35 +187,82 @@ conversation.run()
 sys.stdout = old_stdout
 raw = captured.getvalue()
 
-# Try to extract the last assistant response
-# Look for patterns like "Assistant:" or "assistant:" followed by content
-patterns = [
-    r'(?:Assistant|assistant|AI|Response|response)[:\\s]*\\n(.+)$',
-]
+# Debug: inspect conversation object
+debug_info = []
+debug_info.append(f"conversation type: {type(conversation)}")
+debug_info.append(f"conversation dir: {[x for x in dir(conversation) if not x.startswith('__')]}")
+
+# Try various ways to get the response
 response = ""
-for pat in patterns:
-    matches = re.findall(pat, raw, re.DOTALL | re.IGNORECASE)
-    if matches:
-        response = matches[-1].strip()
-        break
 
+# Method 1: conversation.messages
+for attr in ['messages', '_messages', 'history', '_history', 'events', '_events', 'turns', '_turns']:
+    try:
+        val = getattr(conversation, attr)
+        if val:
+            debug_info.append(f"conversation.{attr} = {type(val)} len={len(val) if hasattr(val, '__len__') else 'N/A'}")
+            # Try to get last message
+            if isinstance(val, list) and len(val) > 0:
+                last = val[-1]
+                debug_info.append(f"  last item type: {type(last)}, dir: {[x for x in dir(last) if not x.startswith('_')]}")
+                for msg_attr in ['content', 'text', 'message', 'response', 'output', 'data']:
+                    try:
+                        msg_val = getattr(last, msg_attr)
+                        if msg_val and isinstance(msg_val, str) and len(msg_val) > 10:
+                            response = msg_val
+                            debug_info.append(f"  FOUND response via .{msg_attr}: {len(response)} chars")
+                            break
+                    except:
+                        pass
+    except:
+        pass
+
+# Method 2: agent attributes
 if not response:
-    # Fallback: find last block of Chinese text
-    lines = raw.split('\\n')
-    chinese_lines = []
-    for line in lines:
-        if re.search(r'[\\u4e00-\\u9fff]', line) or (chinese_lines and line.strip()):
-            chinese_lines.append(line)
-        elif chinese_lines and not line.strip():
-            break
-    response = '\\n'.join(chinese_lines[-100:]) if chinese_lines else raw[-3000:]
+    for attr in ['last_response', 'response', '_response', 'messages', '_messages']:
+        try:
+            val = getattr(agent, attr)
+            if val and isinstance(val, str) and len(val) > 10:
+                response = val
+                debug_info.append(f"FOUND response via agent.{attr}: {len(response)} chars")
+                break
+        except:
+            pass
 
-# Truncate to reasonable length
+# Method 3: parse raw stdout for the response
+if not response:
+    # Look for the last substantial text block after all tool calls
+    # The LLM response typically comes after tool results
+    lines = raw.split('\\n')
+    # Find lines that look like a response (not system prompt, not tool output)
+    response_lines = []
+    in_response = False
+    for i, line in enumerate(lines):
+        # Skip system prompt markers
+        if any(m in line for m in ['System Prompt', '<SOUL>', '<ROLE>', '<MEMORY>', '<EFFICIENCY>']):
+            continue
+        # Look for response indicators
+        if re.search(r'[\\u4e00-\\u9fff]{3,}', line) and not line.startswith('*') and not line.startswith(' '):
+            in_response = True
+        if in_response:
+            response_lines.append(line)
+
+    if response_lines:
+        response = '\\n'.join(response_lines[-100:])
+
+# Fallback: use last 3000 chars of raw output
+if not response:
+    response = raw[-3000:] if len(raw) > 3000 else raw
+
+# Truncate
 if len(response) > 8000:
     response = response[:8000] + "\\n\\n...(内容过长已截断)"
 
 with open(os.environ["RESPONSE_FILE"], 'w') as f:
     f.write(response)
+
+# Write debug info to stderr
+sys.stderr.write("\\n".join(debug_info) + "\\n")
 """
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
