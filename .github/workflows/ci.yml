@@ -52,20 +52,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: link-seek
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Run non-db pipeline test
         env:
-          PAT_TOKEN: ${{ steps.app-token.outputs.token }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: python scripts/pipeline_test.py non-db
 
   pipeline-test-db:
@@ -75,20 +68,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: link-seek
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Run db pipeline test
         env:
-          PAT_TOKEN: ${{ steps.app-token.outputs.token }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: python scripts/pipeline_test.py db
 
   pipeline-test-discussion:
@@ -98,18 +84,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: link-seek
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Run discussion pipeline test
         env:
-          PAT_TOKEN: ${{ steps.app-token.outputs.token }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: python scripts/pipeline_test.py discussion

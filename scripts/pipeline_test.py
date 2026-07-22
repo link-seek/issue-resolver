@@ -278,8 +278,17 @@ def test_db():
             return False
         print("  ✓ auto-merge not enabled (correct for DB changes)")
 
+        # Wait for PR to be mergeable (CI checks pass)
+        mergeable = poll_until(
+            f"PR #{pr_num} mergeable",
+            lambda: get_pr(pr_num).get("mergeable") == True,
+            timeout=600
+        )
+        if not mergeable:
+            print(f"FAIL: PR #{pr_num} not mergeable within timeout")
+            return False
+
         # Manual merge
-        time.sleep(60)
         merge_pr(pr_num)
 
         # Wait for deploy
