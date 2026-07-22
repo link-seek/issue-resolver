@@ -26,7 +26,7 @@ jobs:
     if: github.event.label.name == 'fix-me' || github.event.label.name == 'build-feature'
     runs-on: ubuntu-latest
     steps:
-      - uses: xieyucheng123/issue-resolver@main
+      - uses: link-seek/issue-resolver@main
         with:
           llm-model: openai/glm-5.2
           llm-base-url: https://api.modelarts-maas.com/v2
