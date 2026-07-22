@@ -187,6 +187,8 @@ conversation.run()
 sys.stdout = old_stdout
 raw = captured.getvalue()
 
+response = ""
+
 # Write debug info to a separate file
 debug = []
 debug.append(f"=== Conversation dir: {[x for x in dir(conversation) if not x.startswith('__')]}")
