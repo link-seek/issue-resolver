@@ -55,6 +55,10 @@ class TestPRCommentFormat(unittest.TestCase):
 class TestPipelineTestScript(unittest.TestCase):
     """Verify pipeline_test.py has correct modes."""
 
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("PAT_TOKEN", "fake-token-for-test")
+
     def test_pipeline_test_imports(self):
         import pipeline_test
         self.assertTrue(hasattr(pipeline_test, "test_non_db"))
