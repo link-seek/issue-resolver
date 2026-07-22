@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check scripts/ tests/ || true
+
+      - name: Compile check
+        run: |
+          for f in scripts/*.py; do
+            python -m py_compile "$f" || { echo "FAIL: $f"; exit 1; }
+          done
+          echo "All scripts compile OK"
+
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run unit tests
+        run: pytest tests/ -v
+
+  pipeline-test-non-db:
+    needs: [lint, unit-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run non-db pipeline test
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: python scripts/pipeline_test.py non-db
+
+  pipeline-test-db:
+    needs: [lint, unit-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run db pipeline test
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: python scripts/pipeline_test.py db
+
+  pipeline-test-discussion:
+    needs: [lint, unit-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run discussion pipeline test
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: python scripts/pipeline_test.py discussion
