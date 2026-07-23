@@ -5,8 +5,13 @@ Usage:
     python pipeline_test.py non-db      # fix-me issue → PR → auto-merge → deploy
     python pipeline_test.py db          # DB fix-me issue → risk analysis → manual merge → deploy
     python pipeline_test.py discussion  # discussion @oh → discuss job → reply
+
+Requires:
+    PAT_TOKEN env var — GitHub PAT for API access
+    CONSUMER_REPO env var — consumer repo in owner/name format
 """
 
+import base64
 import json
 import os
 import re
@@ -16,19 +21,22 @@ import urllib.request
 import urllib.error
 
 
-EAP_REPO = "link-seek/enterprise-architecture-platform"
-EAP_OWNER = "link-seek"
-EAP_NAME = "enterprise-architecture-platform"
-DEPLOY_URL = "https://api.xieyucheng.top"
 TOKEN = os.environ.get("PAT_TOKEN", "")
+CONSUMER_REPO = os.environ.get("CONSUMER_REPO", "")
 
 if not TOKEN:
     print("PAT_TOKEN not set")
     sys.exit(1)
+if not CONSUMER_REPO:
+    print("CONSUMER_REPO not set (e.g. link-seek/enterprise-architecture-platform)")
+    sys.exit(1)
+
+CONSUMER_OWNER, CONSUMER_NAME = CONSUMER_REPO.split("/", 1)
+CONFIG = {}
 
 
 def gh_api(method, path, data=None):
-    url = f"https://api.github.com/repos/{EAP_REPO}/{path}"
+    url = f"https://api.github.com/repos/{CONSUMER_REPO}/{path}"
     body = json.dumps(data).encode() if data else None
     req = urllib.request.Request(url, data=body, headers={
         "Authorization": f"token {TOKEN}",
@@ -49,9 +57,29 @@ def gh_graphql(query, variables=None):
         return json.load(resp)
 
 
-def create_issue(title, body, labels="fix-me"):
+def fetch_config():
+    """Fetch .issue-resolver.yml from consumer repo via GitHub API."""
+    try:
+        url = f"https://api.github.com/repos/{CONSUMER_REPO}/contents/.issue-resolver.yml"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"token {TOKEN}",
+            "Accept": "application/vnd.github+json",
+        })
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.load(resp)
+        content = base64.b64decode(data["content"]).decode()
+        import yaml
+        return yaml.safe_load(content) or {}
+    except Exception as e:
+        print(f"WARNING: Could not fetch .issue-resolver.yml: {e}")
+        print("Using default values")
+        return {}
+
+
+def create_issue(title, body, labels=None):
+    label = labels or CONFIG.get("trigger", {}).get("label", "fix-me")
     print(f"Creating issue: {title}")
-    data = gh_api("POST", "issues", {"title": title, "body": body, "labels": labels.split(",")})
+    data = gh_api("POST", "issues", {"title": title, "body": body, "labels": [label]})
     print(f"  Issue #{data['number']}: {data['html_url']}")
     return data["number"]
 
@@ -65,9 +93,10 @@ def close_issue(number):
 def create_discussion(title, body):
     print(f"Creating discussion: {title}")
     repo_id = gh_graphql(
-        '{ repository(owner:"%s", name:"%s") { id discussionCategories(first:5) { nodes { id name } } } }' % (EAP_OWNER, EAP_NAME)
+        '{ repository(owner:"%s", name:"%s") { id discussionCategories(first:5) { nodes { id name } } } }' % (CONSUMER_OWNER, CONSUMER_NAME)
     )["data"]["repository"]
-    cat_id = next(c["id"] for c in repo_id["discussionCategories"]["nodes"] if c["name"] == "General")
+    category = CONFIG.get("pipeline_test", {}).get("discussion", {}).get("category", "General")
+    cat_id = next(c["id"] for c in repo_id["discussionCategories"]["nodes"] if c["name"] == category)
     result = gh_graphql(
         'mutation($input: CreateDiscussionInput!) { createDiscussion(input: $input) { discussion { number url id } } }',
         {"input": {"repositoryId": repo_id["id"], "categoryId": cat_id, "title": title, "body": body}}
@@ -106,13 +135,13 @@ def merge_pr(number):
 
 def get_discussion_comments(number):
     result = gh_graphql(
-        '{ repository(owner:"%s", name:"%s") { discussion(number:%d) { comments(first:20) { nodes { body author { login } } } } } }' % (EAP_OWNER, EAP_NAME, number)
+        '{ repository(owner:"%s", name:"%s") { discussion(number:%d) { comments(first:20) { nodes { body author { login } } } } } }' % (CONSUMER_OWNER, CONSUMER_NAME, number)
     )
     return result["data"]["repository"]["discussion"]["comments"]["nodes"]
 
 
 def get_recent_workflow_runs(limit=5):
-    url = f"https://api.github.com/repos/{EAP_REPO}/actions/runs?per_page={limit}"
+    url = f"https://api.github.com/repos/{CONSUMER_REPO}/actions/runs?per_page={limit}"
     req = urllib.request.Request(url, headers={
         "Authorization": f"token {TOKEN}",
         "Accept": "application/vnd.github+json",
@@ -176,13 +205,22 @@ def curl_check(url):
         return False
 
 
+def get_deploy_url():
+    return CONFIG.get("deploy", {}).get("url", "")
+
+
+def get_health_endpoint():
+    return CONFIG.get("deploy", {}).get("health_endpoint", "/health")
+
+
 def test_non_db():
     """Flow: fix-me issue → PR → auto-merge → deploy → verify endpoint."""
     ts = int(time.time())
-    title = f"Pipeline Test: 更新 /api/pipeline-test 端点返回时间戳 {ts}"
-    body = f"在 backend 添加一个 /api/pipeline-test 端点，返回 JSON `{{\"test\": true, \"timestamp\": {ts}}}`。这是一个无害的测试端点。"
+    pt = CONFIG.get("pipeline_test", {}).get("auto_merge", {})
+    title = pt.get("title_template", "Pipeline Test: 更新 /api/pipeline-test 端点返回时间戳 {ts}").format(ts=ts)
+    body = pt.get("body_template", "在 backend 添加一个 /api/pipeline-test 端点，返回 JSON `{{\"test\": true, \"timestamp\": {ts}}}`。这是一个无害的测试端点。").format(ts=ts)
 
-    issue_num = create_issue(title, body, "fix-me")
+    issue_num = create_issue(title, body)
     pr_num = None
 
     try:
@@ -232,11 +270,13 @@ def test_non_db():
 
         # Verify endpoint
         time.sleep(30)
-        ok = curl_check(f"{DEPLOY_URL}/api/pipeline-test")
-        if ok:
-            print("✓ Endpoint /api/pipeline-test accessible")
-        else:
-            print("⚠ Endpoint not accessible (may not be implemented by agent, acceptable)")
+        deploy_url = get_deploy_url()
+        if deploy_url:
+            ok = curl_check(f"{deploy_url}/api/pipeline-test")
+            if ok:
+                print("✓ Endpoint /api/pipeline-test accessible")
+            else:
+                print("⚠ Endpoint not accessible (may not be implemented by agent, acceptable)")
 
         print("PASS: non-db flow")
         return True
@@ -275,10 +315,11 @@ def _check_deploy_success():
 def test_db():
     """Flow: DB fix-me issue → PR → risk analysis → manual merge → deploy."""
     ts = int(time.time())
-    title = f"Pipeline Test: 给 organizations 表添加 pipeline_test_{ts} nullable 列"
-    body = f"在 backend/migration 中添加一个迁移，给 organizations 表添加 `pipeline_test_{ts}` 列（类型 String，nullable，默认 null）。这是一个无害的测试列。"
+    pt = CONFIG.get("pipeline_test", {}).get("human_review", {})
+    title = pt.get("title_template", "Pipeline Test: 给 organizations 表添加 pipeline_test_{ts} nullable 列").format(ts=ts)
+    body = pt.get("body_template", "在 backend/migration 中添加一个迁移，给 organizations 表添加 `pipeline_test_{ts}` 列（类型 String，nullable，默认 null）。这是一个无害的测试列。").format(ts=ts)
 
-    issue_num = create_issue(title, body, "fix-me")
+    issue_num = create_issue(title, body)
     pr_num = None
 
     try:
@@ -334,11 +375,13 @@ def test_db():
             return False
 
         # Verify health
-        ok = curl_check(f"{DEPLOY_URL}/health")
-        if ok:
-            print("✓ Health check passed")
-        else:
-            print("⚠ Health check failed (investigating)")
+        deploy_url = get_deploy_url()
+        if deploy_url:
+            ok = curl_check(f"{deploy_url}{get_health_endpoint()}")
+            if ok:
+                print("✓ Health check passed")
+            else:
+                print("⚠ Health check failed (investigating)")
 
         print("PASS: db flow")
         return True
@@ -363,7 +406,8 @@ def test_discussion():
     """Flow: discussion @oh → discuss job → reply with code analysis."""
     ts = int(time.time())
     title = f"Pipeline Test: 分析项目结构 ({ts})"
-    body = "@oh 请分析下项目的整体架构和模块划分"
+    pt = CONFIG.get("pipeline_test", {}).get("discussion", {})
+    body = pt.get("body", "@oh 请分析下项目的整体架构和模块划分")
 
     disc_num, disc_id = create_discussion(title, body)
 
@@ -416,10 +460,15 @@ def _find_discussion_reply(disc_num):
 
 
 def main():
+    global CONFIG
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     print(f"=== Pipeline Test: {mode} ===")
-    print(f"Repo: {EAP_REPO}")
+    print(f"Repo: {CONSUMER_REPO}")
     print(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
+    print()
+
+    CONFIG = fetch_config()
+    print(f"Config loaded: {list(CONFIG.keys())}")
     print()
 
     if mode == "non-db":

@@ -11,10 +11,39 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
 from pathlib import Path
+
+
+DEFAULT_CONFIG = {
+    "trigger": {"label": "fix-me", "mention": "@oh"},
+    "risk_detection": {
+        "file_patterns": [
+            r"migration", r"\.sql$", r"/schema", r"/database",
+            r"\.prisma$", r"alembic", r"diesel", r"/entit",
+        ]
+    },
+    "test": {"command": None},
+}
+
+
+def load_config() -> dict:
+    config_path = Path(".issue-resolver.yml")
+    if not config_path.exists():
+        print("No .issue-resolver.yml found, using defaults")
+        return DEFAULT_CONFIG
+    import yaml
+    with open(config_path) as f:
+        user_config = yaml.safe_load(f) or {}
+    merged = json.loads(json.dumps(DEFAULT_CONFIG))
+    for key in ("trigger", "risk_detection", "test", "pipeline_test", "deploy"):
+        if key in user_config:
+            merged[key] = user_config[key]
+    print(f"Loaded config from {config_path}")
+    return merged
 
 
 def get_env(name: str, default: str | None = None) -> str:
@@ -93,7 +122,14 @@ def analyze_db_risk(db_files: list[str]) -> str:
     return "\n".join(lines)
 
 
-def run_tests() -> bool:
+def run_tests(config: dict) -> bool:
+    test_cmd = config.get("test", {}).get("command")
+    if test_cmd:
+        r = subprocess.run(test_cmd, shell=True, capture_output=True, text=True, timeout=600)
+        print(f"test command '{test_cmd}' exit: {r.returncode}")
+        if r.returncode != 0:
+            print(f"stderr: {r.stderr[:500]}")
+        return r.returncode == 0
     if Path("Cargo.toml").exists():
         r = subprocess.run(["cargo", "test", "--", "--nocapture"],
                          capture_output=True, text=True, timeout=600)
@@ -123,6 +159,8 @@ def main():
 
     print(f"Repo: {repo_name}, Issue: #{issue_number}, Model: {model}")
     print(f"CWD: {os.getcwd()}")
+
+    config = load_config()
 
     # Fetch issue
     issue = gh_api("GET", f"{repo_name}/issues/{issue_number}", github_token)
@@ -381,7 +419,7 @@ Start implementing now.
 
     # Run tests
     print("Running tests...")
-    tests_ok = run_tests()
+    tests_ok = run_tests(config)
 
     # Create PR
     pr = gh_api("POST", f"{repo_name}/pulls", github_token, {
@@ -395,11 +433,17 @@ Start implementing now.
     print(f"PR created: {pr_url}")
 
     # Check for database changes and decide auto-merge
-    import re
-    db_pattern = re.compile(
-        r'(migration|\.sql$|/schema[/.]|/database[/.]|\.prisma$|alembic|diesel|/entit)',
-        re.IGNORECASE
-    )
+    risk_patterns = config.get("risk_detection", {}).get("file_patterns", [])
+    if risk_patterns:
+        db_pattern = re.compile(
+            '|'.join(f'({p})' for p in risk_patterns),
+            re.IGNORECASE
+        )
+    else:
+        db_pattern = re.compile(
+            r'(migration|\.sql$|/schema[/.]|/database[/.]|\.prisma$|alembic|diesel|/entit)',
+            re.IGNORECASE
+        )
 
     pr_files = []
     page = 1

@@ -40,7 +40,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install pytest
-        run: pip install pytest
+        run: pip install pytest pyyaml
 
       - name: Run unit tests
         run: pytest tests/ -v
@@ -59,6 +59,7 @@ jobs:
       - name: Run non-db pipeline test
         env:
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
         run: python scripts/pipeline_test.py non-db
 
   pipeline-test-db:
@@ -75,6 +76,7 @@ jobs:
       - name: Run db pipeline test
         env:
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
         run: python scripts/pipeline_test.py db
 
   pipeline-test-discussion:
@@ -91,4 +93,5 @@ jobs:
       - name: Run discussion pipeline test
         env:
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
         run: python scripts/pipeline_test.py discussion

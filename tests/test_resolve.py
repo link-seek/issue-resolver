@@ -81,13 +81,63 @@ class TestRunTests(unittest.TestCase):
     """Test run_tests function with different project types."""
 
     def test_no_project_returns_true(self):
-        from resolve_issue import run_tests
+        from resolve_issue import run_tests, DEFAULT_CONFIG
         with tempfile.TemporaryDirectory() as tmpdir:
             old_cwd = os.getcwd()
             os.chdir(tmpdir)
             try:
-                result = run_tests()
+                result = run_tests(DEFAULT_CONFIG)
                 self.assertTrue(result)
+            finally:
+                os.chdir(old_cwd)
+
+    def test_config_test_command(self):
+        from resolve_issue import run_tests
+        config = {"test": {"command": "true"}}
+        result = run_tests(config)
+        self.assertTrue(result)
+
+    def test_config_test_command_failure(self):
+        from resolve_issue import run_tests
+        config = {"test": {"command": "false"}}
+        result = run_tests(config)
+        self.assertFalse(result)
+
+
+class TestLoadConfig(unittest.TestCase):
+    """Test load_config function."""
+
+    def test_no_config_file_returns_defaults(self):
+        from resolve_issue import load_config, DEFAULT_CONFIG
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                config = load_config()
+                self.assertEqual(config["trigger"]["label"], DEFAULT_CONFIG["trigger"]["label"])
+                self.assertEqual(config["trigger"]["mention"], DEFAULT_CONFIG["trigger"]["mention"])
+            finally:
+                os.chdir(old_cwd)
+
+    def test_config_file_loaded(self):
+        from resolve_issue import load_config
+        config_content = """
+trigger:
+  label: "custom-label"
+  mention: "@custom-bot"
+test:
+  command: "echo test"
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            os.chdir(tmpdir)
+            try:
+                with open(".issue-resolver.yml", "w") as f:
+                    f.write(config_content)
+                config = load_config()
+                self.assertEqual(config["trigger"]["label"], "custom-label")
+                self.assertEqual(config["trigger"]["mention"], "@custom-bot")
+                self.assertEqual(config["test"]["command"], "echo test")
             finally:
                 os.chdir(old_cwd)
 
@@ -146,6 +196,7 @@ class TestPipelineTestScript(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         os.environ.setdefault("PAT_TOKEN", "fake-token-for-test")
+        os.environ.setdefault("CONSUMER_REPO", "link-seek/enterprise-architecture-platform")
 
     def test_pipeline_test_imports(self):
         import pipeline_test

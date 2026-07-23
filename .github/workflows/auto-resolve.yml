@@ -2,6 +2,17 @@ name: Auto-resolve
 
 on:
   workflow_call:
+    inputs:
+      trigger-label:
+        description: 'Label that triggers the resolve flow'
+        required: false
+        default: 'fix-me'
+        type: string
+      mention:
+        description: 'Mention string that triggers the discuss flow'
+        required: false
+        default: '@oh'
+        type: string
     secrets:
       LLM_API_KEY:
         required: true
@@ -25,8 +36,8 @@ permissions:
 jobs:
   resolve:
     if: |
-      github.event.label.name == 'fix-me' ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@oh') &&
+      github.event.label.name == inputs.trigger-label ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, inputs.mention) &&
         (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER'))
     runs-on: ubuntu-latest
     steps:
@@ -35,7 +46,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: link-seek
+          owner: ${{ github.repository_owner }}
 
       - name: Install Obscura
         run: |
@@ -58,9 +69,9 @@ jobs:
 
   discuss:
     if: |
-      (github.event_name == 'discussion_comment' && contains(github.event.comment.body, '@oh') &&
+      (github.event_name == 'discussion_comment' && contains(github.event.comment.body, inputs.mention) &&
         (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER')) ||
-      (github.event_name == 'discussion' && contains(github.event.discussion.body, '@oh') &&
+      (github.event_name == 'discussion' && contains(github.event.discussion.body, inputs.mention) &&
         (github.event.discussion.author_association == 'OWNER' || github.event.discussion.author_association == 'COLLABORATOR' || github.event.discussion.author_association == 'MEMBER'))
     runs-on: ubuntu-latest
     steps:
@@ -69,7 +80,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: link-seek
+          owner: ${{ github.repository_owner }}
 
       - name: Install Obscura
         run: |
@@ -119,7 +130,7 @@ jobs:
           DISCUSSION_NODE_ID: ${{ github.event.discussion.node_id }}
           REPO_NAME: ${{ github.repository }}
         run: |
-          uv run --no-project --with openhands-sdk --with openhands-tools \
+          uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml \
             python ../issue-resolver-scripts/scripts/discuss.py
 
       - name: Upload logs

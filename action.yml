@@ -76,7 +76,7 @@ runs:
               ISSUE_TYPE: ${{ inputs.issue-type }}
               REPO_NAME: ${{ github.repository }}
           run: |
-              uv run --no-project --with openhands-sdk --with openhands-tools \
+              uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml \
                 python ../issue-resolver-plugin/scripts/resolve_issue.py
 
         - name: Upload logs
