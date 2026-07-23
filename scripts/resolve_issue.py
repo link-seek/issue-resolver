@@ -351,6 +351,30 @@ Start implementing now.
     # already has those commits. We need to reset main — but branch is already
     # checked out so we're fine.
 
+    # Rebase on latest main to avoid conflicts
+    print("Rebasing on latest main...")
+    subprocess.run(["git", "fetch", "origin", "main"], check=True)
+    rebase = subprocess.run(
+        ["git", "rebase", "origin/main"],
+        capture_output=True, text=True
+    )
+    if rebase.returncode != 0:
+        print(f"Rebase failed: {rebase.stderr[:200]}")
+        subprocess.run(["git", "rebase", "--abort"], check=True)
+        merge = subprocess.run(
+            ["git", "merge", "origin/main", "--no-edit"],
+            capture_output=True, text=True
+        )
+        if merge.returncode != 0:
+            print(f"Merge also failed: {merge.stderr[:200]}")
+            subprocess.run(["git", "merge", "--abort"], check=True)
+            gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
+                   {"body": "⚠️ 无法自动 rebase/merge，main 分支有冲突。请手动处理后再合并。"})
+            sys.exit(1)
+        print("Merged origin/main into branch (rebase failed, merge succeeded)")
+    else:
+        print("Rebase succeeded")
+
     # Push
     push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
     subprocess.run(["git", "push", push_url, branch], check=True)

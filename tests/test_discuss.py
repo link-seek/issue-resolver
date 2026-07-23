@@ -3,7 +3,7 @@
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
@@ -25,7 +25,7 @@ class TestGetFileTree(unittest.TestCase):
     def test_limits_to_200_files(self):
         from discuss import get_file_tree
         result = get_file_tree()
-        lines = [l for l in result.split("\n") if l.strip()]
+        lines = [line for line in result.split("\n") if line.strip()]
         self.assertLessEqual(len(lines), 200)
 
 

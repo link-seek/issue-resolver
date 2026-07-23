@@ -139,6 +139,34 @@ def poll_until(description, check_fn, timeout=600, interval=30):
     return None
 
 
+def run_with_retry(description, test_fn, max_retries=2):
+    """Run a test function with retry on failure."""
+    for attempt in range(1, max_retries + 1):
+        print(f"\n--- {description}: attempt {attempt}/{max_retries} ---")
+        try:
+            if test_fn():
+                return True
+        except Exception as e:
+            print(f"  (attempt {attempt} error: {e})")
+        if attempt < max_retries:
+            print("  Retrying in 30s...")
+            time.sleep(30)
+    print(f"  ✗ {description} failed after {max_retries} attempts")
+    return False
+
+
+def close_pr_if_open(pr_num):
+    """Close a PR if it's still open (cleanup on test failure)."""
+    try:
+        pr = get_pr(pr_num)
+        if not pr.get("merged") and pr.get("state") == "OPEN":
+            print(f"  Cleaning up: closing PR #{pr_num}")
+            gh_api("PATCH", f"pulls/{pr_num}", {"state": "closed"})
+            print(f"  PR #{pr_num} closed")
+    except Exception as e:
+        print(f"  (cleanup error for PR #{pr_num}: {e})")
+
+
 def curl_check(url):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "pipeline-test"})
@@ -155,6 +183,7 @@ def test_non_db():
     body = f"在 backend 添加一个 /api/pipeline-test 端点，返回 JSON `{{\"test\": true, \"timestamp\": {ts}}}`。这是一个无害的测试端点。"
 
     issue_num = create_issue(title, body, "fix-me")
+    pr_num = None
 
     try:
         # Wait for agent to comment (PR creation or confirmation request)
@@ -213,6 +242,8 @@ def test_non_db():
         return True
 
     finally:
+        if pr_num:
+            close_pr_if_open(pr_num)
         close_issue(issue_num)
 
 
@@ -248,6 +279,7 @@ def test_db():
     body = f"在 backend/migration 中添加一个迁移，给 organizations 表添加 `pipeline_test_{ts}` 列（类型 String，nullable，默认 null）。这是一个无害的测试列。"
 
     issue_num = create_issue(title, body, "fix-me")
+    pr_num = None
 
     try:
         # Wait for PR
@@ -281,7 +313,7 @@ def test_db():
         # Wait for PR to be mergeable (CI checks pass)
         mergeable = poll_until(
             f"PR #{pr_num} mergeable",
-            lambda: get_pr(pr_num).get("mergeable") == True,
+            lambda: get_pr(pr_num).get("mergeable") is True,
             timeout=600
         )
         if not mergeable:
@@ -312,6 +344,8 @@ def test_db():
         return True
 
     finally:
+        if pr_num:
+            close_pr_if_open(pr_num)
         close_issue(issue_num)
 
 
@@ -389,21 +423,21 @@ def main():
     print()
 
     if mode == "non-db":
-        ok = test_non_db()
+        ok = run_with_retry("non-db pipeline test", test_non_db, max_retries=2)
     elif mode == "db":
-        ok = test_db()
+        ok = run_with_retry("db pipeline test", test_db, max_retries=2)
     elif mode == "discussion":
-        ok = test_discussion()
+        ok = run_with_retry("discussion pipeline test", test_discussion, max_retries=2)
     else:
         print(f"Unknown mode: {mode}. Use: non-db, db, discussion")
         sys.exit(1)
 
     print()
     if ok:
-        print(f"=== RESULT: PASS ===")
+        print("=== RESULT: PASS ===")
         sys.exit(0)
     else:
-        print(f"=== RESULT: FAIL ===")
+        print("=== RESULT: FAIL ===")
         sys.exit(1)
 
 

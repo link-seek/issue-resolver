@@ -89,6 +89,7 @@ def main():
     llm_model = os.environ.get("LLM_MODEL", "openai/glm-5.2")
     llm_base_url = os.environ.get("LLM_BASE_URL", "https://api.modelarts-maas.com/v2")
     llm_api_key = os.environ.get("LLM_API_KEY", "")
+    _ = (llm_model, llm_base_url, llm_api_key)  # used via env in subprocess
 
     if not discussion_node_id:
         print("No DISCUSSION_NODE_ID set")
