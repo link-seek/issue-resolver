@@ -8,6 +8,8 @@ import sys
 import tempfile
 import urllib.request
 
+from templates import get_template
+
 
 def gh_graphql(token: str, query: str, variables: dict = None) -> dict:
     url = "https://api.github.com/graphql"
@@ -112,40 +114,11 @@ def main():
     file_tree = get_file_tree()
     print(f"File tree: {len(file_tree.split(chr(10)))} files")
 
-    prompt = f"""你是一个技术架构师。请分析以下讨论内容，结合仓库实际代码，给出技术方案建议。
-
-## 仓库信息
-- 仓库: {repo_name}
-- 当前工作目录包含完整代码，你可以使用 FileEditor 工具查看文件内容，使用 Terminal 工具运行命令
-
-## 仓库文件结构
-```
-{file_tree}
-```
-
-## 讨论标题
-{title}
-
-## 讨论分类
-{category}
-
-## 讨论内容
-{body}
-
-## 已有评论
-{comment_history}
-
-## 要求
-1. 请用简体中文回复
-2. **先阅读相关代码文件**：使用 FileEditor 工具查看与讨论相关的源代码文件，理解现有实现
-3. 分析需求的技术可行性，基于实际代码给出判断
-4. 给出实现方案建议，包括：
-   - 涉及哪些文件/模块（给出具体文件路径）
-   - 大致的改动方向（引用现有代码结构）
-   - 推荐的技术方案
-   - 潜在风险和注意事项
-5. 如果需求不够明确，提出需要澄清的问题
-6. 不要直接修改代码，只给出方案建议"""
+    prompt = get_template(
+        "prompt_discuss",
+        repo_name=repo_name, file_tree=file_tree, title=title,
+        category=category, body=body, comment_history=comment_history,
+    )
 
     print("Sending to LLM...")
 
@@ -278,7 +251,7 @@ with open(os.environ["RESPONSE_FILE"], 'w') as f:
 
     print(f"Response length: {len(llm_response)} chars")
 
-    reply_body = f"## 技术方案建议\n\n{llm_response}\n\n---\n🤖 由 GLM-5.2 生成"
+    reply_body = get_template("discussion_reply", llm_response=llm_response)
 
     try:
         result_gql = reply_discussion(token, discussion_node_id, reply_body)

@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+ignore = [
+    "EXE002",   # executable without shebang (templates.py is a module)
+    "BLE001",   # blind exception catch
+    "PLW1510",  # subprocess.run without explicit check
+    "FURB167",  # re.I alias
+    "I001",     # import sorting
+    "UP031",    # format specifiers
+    "SIM102",   # nested if
+    "RUF013",   # implicit Optional
+]

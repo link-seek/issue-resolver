@@ -17,6 +17,8 @@ import sys
 import urllib.request
 from pathlib import Path
 
+from templates import get_template
+
 
 DEFAULT_CONFIG = {
     "trigger": {"label": "fix-me", "mention": "@oh"},
@@ -165,20 +167,20 @@ def main():
     # Fetch issue
     issue = gh_api("GET", f"{repo_name}/issues/{issue_number}", github_token)
     title = issue["title"]
-    body = issue.get("body", "") or "(no description)"
+    body = issue.get("body", "") or "（无描述）"
     print(f"Title: {title}")
 
     # Fetch comments
     comments = gh_api("GET", f"{repo_name}/issues/{issue_number}/comments", github_token)
     comments_text = ""
     if comments:
-        comments_text = "\n\n## Additional Context from Comments:\n"
+        comments_text = "\n\n## 评论补充上下文:\n"
         for c in comments:
             comments_text += f"\n**{c['user']['login']}**:\n{c['body']}\n"
 
     # Comment: started
     gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-           {"body": "🤖 OpenHands 智能体已开始处理此 Issue，使用 GLM-5.2 模型。"})
+           {"body": get_template("issue_started")})
 
     # Record state before agent
     commit_before = subprocess.run(
@@ -192,89 +194,25 @@ def main():
         any(kw in c["body"].strip().lower() for kw in ("confirm", "确认", "approved"))
         for c in comments
     )
-    bot_posted_plan = any("Implementation Plan" in c.get("body", "") for c in comments)
+    bot_posted_plan = any("实施方案" in c.get("body", "") for c in comments)
 
     if not bot_posted_plan:
         # Phase 1: Agent assesses confidence and either plans or implements directly
-        task_prompt = f"""You are a software engineer working on the repository: {repo_name}
-
-## Issue to Resolve
-**Title**: {title}
-**Description**:
-{body}
-{comments_text}
-
-## Workflow
-1. Explore the codebase to understand the project structure
-2. Assess your confidence: Are you 100% sure what to do and how to do it?
-
-### If 100% confident (simple, clear issue):
-- Directly implement the fix
-- Run tests to verify
-- Self-review: run `git diff` to review all your changes. Check for:
-  - Error handling and edge cases
-  - Security issues (injection, secrets exposure)
-  - Unused imports or variables
-  - Missing pagination or bounds checking
-- Fix any issues found, then re-run tests
-- Do NOT post a plan, just do it
-
-### If NOT 100% confident (complex, ambiguous, needs design):
-- Output your plan and questions in this format:
-
-📋 Plan:
-1. [step 1]
-2. [step 2]
-...
-
-❓ Questions:
-- [question 1]
-- [question 2]
-
-- Do NOT write any code yet
-- I will ask the user to confirm
-
-## Important
-- **DO NOT run any git commands** — just create/modify files directly
-- Make minimal, focused changes
-- Follow existing code conventions
-"""
+        task_prompt = get_template(
+            "prompt_resolve",
+            repo_name=repo_name, title=title, body=body, comments_text=comments_text,
+        )
     elif not user_confirmed:
         print("Plan posted, waiting for user confirmation")
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-               {"body": "⏳ Waiting for confirmation. Reply with 'confirm' or '确认' to proceed."})
+               {"body": get_template("waiting_confirm")})
         sys.exit(0)
     else:
         # Phase 2: User confirmed, implement
-        task_prompt = f"""You are a software engineer working on the repository: {repo_name}
-
-## Issue to Resolve
-**Title**: {title}
-**Description**:
-{body}
-{comments_text}
-
-## Your Task
-The user has confirmed the plan. Now implement it:
-1. Make the necessary code changes
-2. Run tests to verify
-3. If tests fail, fix and iterate
-4. Self-review: run `git diff` to review all your changes. Check for:
-   - Error handling and edge cases
-   - Security issues (injection, secrets exposure)
-   - Unused imports or variables
-   - Naming conventions consistency
-   - Missing pagination or bounds checking
-5. Fix any issues found in self-review
-6. Re-run tests to confirm everything still passes
-
-## Important
-- **DO NOT run any git commands** — just create/modify files directly
-- Make minimal, focused changes
-- Follow existing code conventions
-
-Start implementing now.
-"""
+        task_prompt = get_template(
+            "prompt_confirm",
+            repo_name=repo_name, title=title, body=body, comments_text=comments_text,
+        )
 
     # Create agent
     from openhands.sdk import LLM, Agent, Conversation, get_logger
@@ -327,7 +265,7 @@ Start implementing now.
     except Exception as e:
         logger.error(f"Agent failed: {type(e).__name__}: {e}")
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-               {"body": f"❌ Agent error: {e}"})
+               {"body": get_template("agent_error", error=e)})
         sys.exit(1)
 
     # If this was the planning phase, check if agent wrote code or just planned
@@ -346,7 +284,7 @@ Start implementing now.
                 plan_response = "Plan generated. Please review the workflow logs."
             
             gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-                   {"body": f"📋 **Implementation Plan**\n\n{plan_response}\n\n---\nReply with `confirm` or `确认` to proceed, or provide feedback."})
+                   {"body": get_template("plan_posted", plan_response=plan_response)})
             print("Plan posted to issue, waiting for confirmation")
             sys.exit(0)
         else:
@@ -371,7 +309,7 @@ Start implementing now.
     if not has_new_commits and not has_uncommitted:
         print("No changes detected")
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-               {"body": "⚠️ Agent analyzed the issue but no code changes were made."})
+               {"body": get_template("issue_no_changes")})
         sys.exit(0)
 
     # Create branch
@@ -382,7 +320,7 @@ Start implementing now.
     if has_uncommitted:
         subprocess.run(["git", "add", "-A"], check=True)
         subprocess.run(["git", "commit", "-m",
-                       f"Fix #{issue_number}: {title}\n\nGenerated by OpenHands agent using GLM-5.2."],
+                       get_template("commit_msg", issue_number=issue_number, title=title)],
                        check=True)
 
     # If agent committed to main (shouldn't happen but just in case), the branch
@@ -407,7 +345,7 @@ Start implementing now.
             print(f"Merge also failed: {merge.stderr[:200]}")
             subprocess.run(["git", "merge", "--abort"], check=True)
             gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-                   {"body": "⚠️ 无法自动 rebase/merge，main 分支有冲突。请手动处理后再合并。"})
+                   {"body": get_template("rebase_conflict")})
             sys.exit(1)
         print("Merged origin/main into branch (rebase failed, merge succeeded)")
     else:
@@ -424,7 +362,7 @@ Start implementing now.
     # Create PR
     pr = gh_api("POST", f"{repo_name}/pulls", github_token, {
         "title": f"Fix #{issue_number}: {title}",
-        "body": f"## Automated Fix\n\nAgent: OpenHands SDK + LocalWorkspace\nModel: GLM-5.2 via MAAS\n\nCloses #{issue_number}",
+        "body": get_template("pr_body", issue_number=issue_number),
         "head": branch,
         "base": "main",
     })
@@ -468,7 +406,7 @@ Start implementing now.
         })
 
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token, {
-            "body": f"⚠️ PR #{pr_num} 包含数据库变更，合并前需要人工审查。\n\nPR: {pr_url}"
+            "body": get_template("db_risk_warning", pr_num=pr_num, pr_url=pr_url)
         })
         print(f"DB changes detected, auto-merge NOT enabled for PR #{pr_num}")
     else:
@@ -488,7 +426,7 @@ Start implementing now.
     # Comment on issue
     emoji = "✅" if tests_ok else "⚠️"
     gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-           {"body": f"{emoji} 已创建 PR #{pr_num}: {pr_url}\n\n**测试**: {'通过' if tests_ok else '失败'}\n**模型**: GLM-5.2"})
+           {"body": get_template("pr_created", emoji=emoji, pr_num=pr_num, pr_url=pr_url, test_status="通过" if tests_ok else "失败")})
 
     print(f"\n✅ Done! PR: {pr_url}")
 

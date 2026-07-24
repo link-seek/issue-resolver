@@ -15,6 +15,8 @@ import subprocess
 import sys
 import urllib.request
 
+from templates import get_template
+
 
 def get_env(name: str, default: str | None = None) -> str:
     v = os.getenv(name, default)
@@ -59,43 +61,13 @@ def main():
 
     # Comment: started
     gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
-           {"body": f"🔧 Auto-fix iteration {iteration}/3 started. Reading review feedback..."})
+           {"body": get_template("auto_fix_started", iteration=iteration)})
 
     # Build prompt from review feedback
-    task_prompt = f"""You are a software engineer fixing a pull request based on code review feedback.
-
-## PR Information
-**Title**: {pr_title}
-**Repository**: {repo_name}
-**Branch**: {pr_branch}
-
-## Review Feedback (from AI reviewer)
-{review_body}
-
-## Your Task
-1. Understand the review feedback — identify each issue mentioned
-2. Read the relevant files to understand the current code
-3. Fix each issue identified in the review
-4. Run tests to verify your fixes:
-   - If Cargo.toml exists: `cargo test -- --nocapture`
-   - If package.json exists: `npm test -- --passWithNoTests`
-5. If tests fail, fix and iterate
-6. Self-review: run `git diff` to review your changes. Check for:
-   - Error handling and edge cases
-   - Security issues
-   - Unused imports or variables
-   - Missing pagination or bounds checking
-7. Fix any issues found in self-review
-8. Re-run tests to confirm everything passes
-
-## Important
-- **DO NOT run any git commands** — just create/modify files directly
-- Make minimal, focused changes that address the review feedback
-- Follow existing code conventions
-- Only fix the issues mentioned in the review, do not refactor unrelated code
-
-Start fixing now.
-"""
+    task_prompt = get_template(
+        "prompt_auto_fix",
+        pr_title=pr_title, repo_name=repo_name, pr_branch=pr_branch, review_body=review_body,
+    )
 
     # Create agent
     from openhands.sdk import LLM, Agent, Conversation, get_logger
@@ -148,7 +120,7 @@ Start fixing now.
     except Exception as e:
         logger.error(f"Agent failed: {type(e).__name__}: {e}")
         gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
-               {"body": f"❌ Auto-fix error: {e}"})
+               {"body": get_template("auto_fix_error", error=e)})
         sys.exit(1)
 
     # Check if agent made changes
@@ -159,14 +131,14 @@ Start fixing now.
     if not status_after:
         print("No changes detected from auto-fix")
         gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
-               {"body": "⚠️ Auto-fix agent could not determine fixes from the review. Manual intervention needed."})
+               {"body": get_template("auto_fix_no_changes")})
         sys.exit(0)
 
     print(f"Changes detected:\n{status_after}")
 
     # Commit and push
     subprocess.run(["git", "add", "-A"], check=True)
-    commit_msg = f"auto-fix: address review feedback (iteration {iteration})"
+    commit_msg = get_template("auto_fix_commit", iteration=iteration)
     subprocess.run(["git", "commit", "-m", commit_msg], check=True)
 
     push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
@@ -178,7 +150,7 @@ Start fixing now.
     ).stdout.strip()[:12]
 
     gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
-           {"body": f"✅ Auto-fix pushed ({commit_sha}). CI will re-run review checks."})
+           {"body": get_template("auto_fix_pushed", commit_sha=commit_sha)})
 
     print(f"\n✅ Done! Pushed {commit_sha} to {pr_branch}")
 

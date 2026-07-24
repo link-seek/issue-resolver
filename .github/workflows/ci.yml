@@ -43,6 +43,8 @@ jobs:
         run: pip install pytest pyyaml
 
       - name: Run unit tests
+        env:
+          GITHUB_TOKEN: dummy
         run: pytest tests/ -v
 
   pipeline-test-non-db:
