@@ -16,6 +16,7 @@ import sys
 import urllib.request
 
 from templates import get_template
+from resolve_issue import get_valid_token, create_installation_token, gh_api as _gh_api_raw
 
 
 def get_env(name: str, default: str | None = None) -> str:
@@ -26,14 +27,8 @@ def get_env(name: str, default: str | None = None) -> str:
 
 
 def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict:
-    url = f"https://api.github.com/repos/{path}"
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, headers={
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json",
-    }, method=method)
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp)
+    """Wrapper that auto-refreshes token on 401."""
+    return _gh_api_raw(method, path, token, body)
 
 
 def main():
@@ -136,11 +131,12 @@ def main():
 
     print(f"Changes detected:\n{status_after}")
 
-    # Commit and push
+    # Commit and push — refresh token first
     subprocess.run(["git", "add", "-A"], check=True)
     commit_msg = get_template("auto_fix_commit", iteration=iteration)
     subprocess.run(["git", "commit", "-m", commit_msg], check=True)
 
+    github_token = get_valid_token()
     push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
     subprocess.run(["git", "push", push_url], check=True)
 
