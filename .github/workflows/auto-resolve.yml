@@ -11,7 +11,7 @@ on:
       mention:
         description: 'Mention string that triggers the discuss flow'
         required: false
-        default: 'link-seek-bot[bot]'
+        default: 'oh'
         type: string
     secrets:
       LLM_API_KEY:
