@@ -133,6 +133,18 @@ def merge_pr(number):
     gh_api("PUT", f"pulls/{number}/merge", {"merge_method": "squash"})
 
 
+def wait_for_checks(pr_num, timeout=600):
+    """Wait until all CI checks pass and PR is clean for merge."""
+    def _checks_passed():
+        pr = get_pr(pr_num)
+        return pr.get("mergeable") is True and pr.get("mergeable_state") == "clean"
+    return poll_until(
+        f"PR #{pr_num} checks pass",
+        _checks_passed,
+        timeout=timeout,
+    )
+
+
 def get_discussion_comments(number):
     result = gh_graphql(
         '{ repository(owner:"%s", name:"%s") { discussion(number:%d) { comments(first:20) { nodes { body author { login } } } } } }' % (CONSUMER_OWNER, CONSUMER_NAME, number)
@@ -352,13 +364,9 @@ def test_db():
         print("  ✓ auto-merge not enabled (correct for DB changes)")
 
         # Wait for PR to be mergeable (CI checks pass)
-        mergeable = poll_until(
-            f"PR #{pr_num} mergeable",
-            lambda: get_pr(pr_num).get("mergeable") is True,
-            timeout=600
-        )
+        mergeable = wait_for_checks(pr_num, timeout=600)
         if not mergeable:
-            print(f"FAIL: PR #{pr_num} not mergeable within timeout")
+            print(f"FAIL: PR #{pr_num} checks not passing within timeout")
             return False
 
         # Manual merge
