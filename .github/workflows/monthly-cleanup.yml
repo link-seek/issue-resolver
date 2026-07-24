@@ -34,8 +34,9 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TRIGGER_LABEL: ${{ inputs.trigger-label }}
+          REPO: ${{ github.repository }}
         run: |
-          EXISTING=$(gh issue list -R "$GITHUB_REPOSITORY" \
+          EXISTING=$(gh issue list -R "$REPO" \
             --label "$TRIGGER_LABEL" --search "Monthly Cleanup" \
             --state open --json number --jq 'length')
           if [ "$EXISTING" -gt 0 ]; then
@@ -43,18 +44,15 @@ jobs:
             exit 0
           fi
 
-          gh issue create \
+          gh issue create -R "$REPO" \
             --title "Monthly Cleanup: 修复积累的 minor 问题" \
             --label "$TRIGGER_LABEL" \
-            --body "$(cat <<'EOF'
-          @oh 请执行月度代码清理：
+            --body "@oh 请执行月度代码清理：
 
-          1. 运行 `cargo clippy --workspace`，修复所有 warning
-          2. 运行 `npx eslint .`，修复所有 warning
-          3. 检查前端 async 调用是否都有 `.catch()` 错误处理
+          1. 运行 \`cargo clippy --workspace\`，修复所有 warning
+          2. 运行 \`npx eslint .\`，修复所有 warning
+          3. 检查前端 async 调用是否都有 \`.catch()\` 错误处理
           4. 检查后端 check-then-act 模式是否有竞态（应靠 DB constraint 兜底）
           5. 删除确认无用的死代码
 
-          只做安全的重构，不改功能逻辑。
-          EOF
-          )"
+          只做安全的重构，不改功能逻辑。"
