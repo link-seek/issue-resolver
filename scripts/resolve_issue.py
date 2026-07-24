@@ -14,10 +14,95 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
 from templates import get_template
+
+
+# ── Token refresh: GitHub App installation tokens expire after 1 hour ──
+# For long-running workflows (6h+), we refresh the token on demand.
+_token_cache: dict = {"token": None, "expires_at": 0}
+
+
+def _create_jwt(app_id: str, private_key: str) -> str:
+    """Create a GitHub App JWT (valid 10 min) from the app credentials."""
+    import base64
+    now = int(time.time())
+    payload = {"iat": now - 60, "exp": now + 600, "iss": app_id}
+    header = {"alg": "RS256", "typ": "JWT"}
+
+    def b64(d: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(d, separators=(",", ":")).encode()).rstrip(b"=").decode()
+
+    # Parse PEM private key
+    from cryptography.hazmat.primitives import serialization, hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+    key = serialization.load_pem_private_key(private_key.encode(), password=None)
+
+    signing_input = f"{b64(header)}.{b64(payload)}".encode()
+    signature = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+    return f"{signing_input.decode()}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
+def _get_installation_id(jwt: str, owner: str) -> int:
+    """Get the installation ID for the app in the given owner/org."""
+    req = urllib.request.Request(
+        f"https://api.github.com/orgs/{owner}/installations",
+        headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.load(resp)
+            if data:
+                return data[0]["id"]
+    except urllib.error.HTTPError:
+        pass
+    # Try user installation
+    req = urllib.request.Request(
+        f"https://api.github.com/users/{owner}/installations",
+        headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.load(resp)
+        if data:
+            return data[0]["id"]
+    raise RuntimeError(f"No installation found for app in {owner}")
+
+
+def create_installation_token() -> str:
+    """Create a fresh GitHub App installation token (valid 1 hour)."""
+    app_id = os.getenv("APP_ID")
+    private_key = os.getenv("APP_PRIVATE_KEY")
+    owner = os.getenv("GITHUB_REPOSITORY_OWNER") or os.getenv("REPO_NAME", "").split("/")[0]
+
+    if not app_id or not private_key:
+        # Fallback: use the static GITHUB_TOKEN (may be expired)
+        return os.getenv("GITHUB_TOKEN", "")
+
+    jwt = _create_jwt(app_id, private_key)
+    inst_id = _get_installation_id(jwt, owner)
+
+    req = urllib.request.Request(
+        f"https://api.github.com/app/installations/{inst_id}/access_tokens",
+        method="POST",
+        headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.load(resp)
+
+    _token_cache["token"] = data["token"]
+    _token_cache["expires_at"] = time.time() + 3300  # 55 min (token lasts 1h, refresh early)
+    print(f"[token] Refreshed installation token (expires in ~55 min)")
+    return data["token"]
+
+
+def get_valid_token() -> str:
+    """Return a valid token, refreshing if expired or about to expire."""
+    if _token_cache["token"] and time.time() < _token_cache["expires_at"]:
+        return _token_cache["token"]
+    return create_installation_token()
 
 
 DEFAULT_CONFIG = {
@@ -58,12 +143,24 @@ def get_env(name: str, default: str | None = None) -> str:
 def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict:
     url = f"https://api.github.com/repos/{path}"
     data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, headers={
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json",
-    }, method=method)
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp)
+
+    def _do_request(tok: str) -> dict:
+        req = urllib.request.Request(url, data=data, headers={
+            "Authorization": f"token {tok}",
+            "Accept": "application/vnd.github+json",
+        }, method=method)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.load(resp)
+
+    try:
+        return _do_request(token)
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            # Token expired — refresh and retry once
+            print("[token] Got 401, refreshing token...")
+            new_token = create_installation_token()
+            return _do_request(new_token)
+        raise
 
 
 def analyze_db_risk(db_files: list[str]) -> str:
@@ -351,7 +448,8 @@ def main():
     else:
         print("Rebase succeeded")
 
-    # Push
+    # Push — refresh token first (may have been hours since start)
+    github_token = get_valid_token()
     push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
     subprocess.run(["git", "push", push_url, branch], check=True)
 
@@ -359,7 +457,8 @@ def main():
     print("Running tests...")
     tests_ok = run_tests(config)
 
-    # Create PR
+    # Create PR — refresh token again (tests may have taken a while)
+    github_token = get_valid_token()
     pr = gh_api("POST", f"{repo_name}/pulls", github_token, {
         "title": f"Fix #{issue_number}: {title}",
         "body": get_template("pr_body", issue_number=issue_number),
@@ -412,6 +511,7 @@ def main():
     else:
         import time
         time.sleep(5)
+        github_token = get_valid_token()
         result = subprocess.run(
             ["gh", "pr", "merge", str(pr_num), "--auto", "--squash",
              "--repo", repo_name],

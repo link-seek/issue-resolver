@@ -66,6 +66,10 @@ jobs:
         env:
           SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           AGENT_ENABLE_BROWSING: "true"
+          # For token auto-refresh (installation tokens expire after 1h)
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
 
   discuss:
     if: |
@@ -129,8 +133,12 @@ jobs:
           AGENT_ENABLE_BROWSING: "true"
           DISCUSSION_NODE_ID: ${{ github.event.discussion.node_id }}
           REPO_NAME: ${{ github.repository }}
+          # For token auto-refresh
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml \
+          uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
             python ../issue-resolver-scripts/scripts/discuss.py
 
       - name: Upload logs
