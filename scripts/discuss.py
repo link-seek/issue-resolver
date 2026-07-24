@@ -215,8 +215,8 @@ if not response:
     response = raw[-5000:] if len(raw) > 5000 else raw
 
 # Truncate
-if len(response) > 10000:
-    response = response[:10000] + "\\n\\n...(内容过长已截断)"
+if len(response) > 65000:
+    response = response[:65000] + "\\n\\n...(内容过长已截断)"
 
 with open(os.environ["RESPONSE_FILE"], 'w') as f:
     f.write(response)
