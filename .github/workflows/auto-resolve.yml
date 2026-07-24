@@ -40,6 +40,7 @@ jobs:
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, inputs.mention) &&
         (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER'))
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -76,8 +77,9 @@ jobs:
       (github.event_name == 'discussion_comment' && contains(github.event.comment.body, inputs.mention) &&
         (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER')) ||
       (github.event_name == 'discussion' && contains(github.event.discussion.body, inputs.mention) &&
-        (github.event.discussion.author_association == 'OWNER' || github.event.discussion.author_association == 'COLLABORATOR' || github.event.discussion.author_association == 'MEMBER'))
+        (github.event.discussion.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER'))
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
