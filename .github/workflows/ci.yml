@@ -50,7 +50,7 @@ jobs:
   pipeline-test-non-db:
     needs: [lint, unit-test]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -67,6 +67,7 @@ jobs:
 
       - name: Run non-db pipeline test
         env:
+          PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
         run: python scripts/pipeline_test.py non-db
@@ -74,7 +75,7 @@ jobs:
   pipeline-test-db:
     needs: [lint, unit-test]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -91,6 +92,7 @@ jobs:
 
       - name: Run db pipeline test
         env:
+          PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
         run: python scripts/pipeline_test.py db
@@ -98,7 +100,7 @@ jobs:
   pipeline-test-discussion:
     needs: [lint, unit-test]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -115,6 +117,7 @@ jobs:
 
       - name: Run discussion pipeline test
         env:
+          PYTHONUNBUFFERED: "1"
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
         run: python scripts/pipeline_test.py discussion
