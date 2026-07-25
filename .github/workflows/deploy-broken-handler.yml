@@ -1,0 +1,104 @@
+name: Deploy Broken Handler
+
+# 处理 deploy-broken label 的 Issue:
+# - 优先处理（跳过排队）
+# - max_iterations 提高到 20
+# - 失败时分类转人
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  classify-and-resolve:
+    if: github.event.label.name == 'deploy-broken'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Classify deploy-broken issue
+        id: classify
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          # Read issue body to classify the failure
+          ISSUE_BODY=$(gh api repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER --jq '.body')
+
+          CATEGORY="unknown"
+          ASSIGNEE=""
+
+          # Classification rules
+          if echo "$ISSUE_BODY" | grep -qiE "502|Bad Gateway"; then
+            CATEGORY="infrastructure"
+            ASSIGNEE="ops"
+            echo "Classified: infrastructure (502 → ops)"
+          elif echo "$ISSUE_BODY" | grep -qiE "405|Method Not Allowed"; then
+            CATEGORY="code"
+            echo "Classified: code (405 → auto-fix)"
+          elif echo "$ISSUE_BODY" | grep -qiE "Unknown field|GraphQL error"; then
+            CATEGORY="code"
+            echo "Classified: code (GraphQL → auto-fix)"
+          elif echo "$ISSUE_BODY" | grep -qiE "timeout|ECONNREFUSED"; then
+            CATEGORY="code"
+            echo "Classified: code (timeout → auto-fix)"
+          elif echo "$ISSUE_BODY" | grep -qiE "SSL|certificate"; then
+            CATEGORY="infrastructure"
+            ASSIGNEE="ops"
+            echo "Classified: infrastructure (SSL → ops)"
+          else
+            CATEGORY="unknown"
+            echo "Classified: unknown"
+          fi
+
+          echo "category=$CATEGORY" >> $GITHUB_OUTPUT
+          echo "assignee=$ASSIGNEE" >> $GITHUB_OUTPUT
+
+      - name: Route to auto-fix (code bug)
+        if: steps.classify.outputs.category == 'code'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          # Add fix-me label to trigger auto-resolve with higher iterations
+          gh issue edit $ISSUE_NUMBER --add-label "fix-me"
+          gh issue comment $ISSUE_NUMBER --body "🤖 Classified as **code bug** — auto-fix engaged (max 20 iterations)."
+
+      - name: Route to human (infrastructure)
+        if: steps.classify.outputs.category == 'infrastructure'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          # Add needs-human label for ops
+          gh issue edit $ISSUE_NUMBER --add-label "needs-human"
+          gh issue comment $ISSUE_NUMBER --body "🚨 Classified as **infrastructure bug** — @mention ops team.
+
+          This appears to be an infrastructure issue (not a code bug). Please investigate:
+          - Backend container running?
+          - CDN/Tengine configuration correct?
+          - SSL certificate valid?
+
+          After fixing, please remove the \`needs-human\` label and add \`fix-me\` if code changes are also needed."
+
+      - name: Route to human (unknown)
+        if: steps.classify.outputs.category == 'unknown'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue edit $ISSUE_NUMBER --add-label "needs-human"
+          gh issue comment $ISSUE_NUMBER --body "❓ Could not classify this deploy-broken issue. Manual investigation needed."

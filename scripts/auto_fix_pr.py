@@ -9,14 +9,12 @@ Max 3 iterations (enforced by the workflow).
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
-import urllib.request
 
 from templates import get_template
-from resolve_issue import get_valid_token, create_installation_token, gh_api as _gh_api_raw
+from resolve_issue import get_valid_token, gh_api as _gh_api_raw
 
 
 def get_env(name: str, default: str | None = None) -> str:

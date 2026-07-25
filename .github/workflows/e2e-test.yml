@@ -1,0 +1,101 @@
+name: E2E Test
+
+# Reusable workflow: 在消费仓调用
+#   uses: link-seek/issue-resolver/.github/workflows/e2e-test.yml@main
+#   with:
+#     app-repo: link-seek/enterprise-architecture-platform
+#     ref: main
+#   secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      app-repo:
+        description: 'Consumer repo (owner/repo)'
+        required: true
+        type: string
+      ref:
+        description: 'Branch or SHA to test'
+        required: false
+        default: 'main'
+        type: string
+      docker-compose-file:
+        description: 'Path to docker-compose CI file'
+        required: false
+        default: 'docker-compose.ci.yml'
+        type: string
+      frontend-dir:
+        description: 'Frontend directory path'
+        required: false
+        default: 'frontend'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.app-repo }}
+          ref: ${{ inputs.ref }}
+          path: app
+
+      - name: Build and start services
+        working-directory: app
+        run: docker compose -f ${{ inputs.docker-compose-file }} up -d --build
+
+      - name: Wait for backend
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/health 2>/dev/null; then
+              echo "Backend healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend failed to start"
+          docker compose -f app/${{ inputs.docker-compose-file }} logs backend
+          exit 1
+
+      - name: Wait for frontend
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:80/health 2>/dev/null; then
+              echo "Frontend healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Frontend failed to start"
+          docker compose -f app/${{ inputs.docker-compose-file }} logs frontend
+          exit 1
+
+      - name: Install Playwright
+        working-directory: app/${{ inputs.frontend-dir }}
+        run: |
+          npx playwright install-deps chromium
+          npx playwright install chromium
+
+      - name: Run E2E tests
+        working-directory: app/${{ inputs.frontend-dir }}
+        env:
+          CI: "true"
+        run: npx playwright test --reporter=line
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-results
+          path: app/${{ inputs.frontend-dir }}/test-results/
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        working-directory: app
+        run: docker compose -f ${{ inputs.docker-compose-file }} down
