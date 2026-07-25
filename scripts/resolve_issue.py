@@ -48,27 +48,18 @@ def _create_jwt(app_id: str, private_key: str) -> str:
 
 def _get_installation_id(jwt: str, owner: str) -> int:
     """Get the installation ID for the app in the given owner/org."""
+    # List all installations and find the one matching the owner
     req = urllib.request.Request(
-        f"https://api.github.com/orgs/{owner}/installations",
-        headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.load(resp)
-            if data:
-                return data[0]["id"]
-    except urllib.error.HTTPError:
-        pass
-    # Try user installation
-    req = urllib.request.Request(
-        f"https://api.github.com/users/{owner}/installations",
+        "https://api.github.com/app/installations",
         headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"},
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.load(resp)
-        if data:
-            return data[0]["id"]
-    raise RuntimeError(f"No installation found for app in {owner}")
+    for inst in data:
+        acct = inst.get("account", {})
+        if acct.get("login", "").lower() == owner.lower():
+            return inst["id"]
+    raise RuntimeError(f"No installation found for app in {owner}. Installations: {[(i.get('account',{}).get('login'), i.get('id')) for i in data]}")
 
 
 def create_installation_token() -> str:
