@@ -1,0 +1,158 @@
+name: L3 Process Evolution
+
+# 人介入后流程改进机制:
+# - auto-fix 失败 → Issue 加 needs-human + flow-improvement-needed
+# - Issue 关闭时检查 flow-improvement-needed → 引导填问卷
+# - 问卷答案 → 生成 lesson + 改进 auto-fix 规则
+
+on:
+  issues:
+    types: [closed, labeled]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  # auto-fix 失败时加 label + 引导
+  mark-needs-human:
+    if: |
+      github.event_name == 'issues' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'auto-fix-failed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Add needs-human + flow-improvement labels
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue edit $ISSUE_NUMBER --add-label "needs-human,flow-improvement-needed"
+          gh issue comment $ISSUE_NUMBER --body "## 🤖 Auto-fix 未能解决
+
+          Auto-fix 已跑完所有迭代仍未通过。请人工修复。
+
+          ### 修完后请回答以下问题（改进流程）
+
+          回复 \`flow-lesson\` 并填以下模板：
+
+          \`\`\`
+          flow-lesson
+          1. 根因: <这个问题的根本原因>
+          2. 流程缺失: <auto-fix 为什么没修好？缺什么能力/规则/上下文？>
+          3. 改进建议: <具体建议：加什么规则/检查/上下文能让 auto-fix 下次自己修好？>
+          \`\`\`
+
+          填完后流程仓会自动沉淀为 lesson，改进 auto-fix。"
+
+  # 人填完问卷后沉淀 lesson
+  process-flow-lesson:
+    if: |
+      github.event_name == 'issue_comment' &&
+      contains(github.event.comment.body, 'flow-lesson') &&
+      contains(github.event.comment.author_association, 'OWNER') || contains(github.event.comment.author_association, 'MEMBER') || contains(github.event.comment.author_association, 'COLLABORATOR')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Parse and save flow lesson
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          # Extract the lesson from the comment
+          # Format: flow-lesson\n1. 根因: ...\n2. 流程缺失: ...\n3. 改进建议: ...
+
+          ROOT_CAUSE=$(echo "$COMMENT_BODY" | grep -oP '1\.\s*根因:\s*\K.*' || echo "")
+          GAP=$(echo "$COMMENT_BODY" | grep -oP '2\.\s*流程缺失:\s*\K.*' || echo "")
+          IMPROVEMENT=$(echo "$COMMENT_BODY" | grep -oP '3\.\s*改进建议:\s*\K.*' || echo "")
+
+          if [ -z "$ROOT_CAUSE" ] || [ -z "$IMPROVEMENT" ]; then
+            echo "Incomplete lesson, skipping"
+            exit 0
+          fi
+
+          # Create a lesson file in the issue-resolver repo
+          LESSON_DATE=$(date -u +%Y-%m-%d)
+          LESSON_FILE="lessons/flow-lesson-${ISSUE_NUMBER}-${LESSON_DATE}.md"
+
+          cat > "$LESSON_FILE" << EOF
+          ---
+          title: "Flow lesson from issue #$ISSUE_NUMBER"
+          category: "flow-improvement"
+          created_at: "$LESSON_DATE"
+          issue: $ISSUE_NUMBER
+          ---
+
+          ## Root Cause
+          $ROOT_CAUSE
+
+          ## Process Gap
+          $GAP
+
+          ## Improvement Suggestion
+          $IMPROVEMENT
+          EOF
+
+          # Commit the lesson to the issue-resolver repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$LESSON_FILE"
+          git commit -m "lesson: flow improvement from issue #$ISSUE_NUMBER
+
+          Root cause: $ROOT_CAUSE
+          Improvement: $IMPROVEMENT"
+          git push
+
+          # Remove flow-improvement-needed label
+          gh issue edit $ISSUE_NUMBER --remove-label "flow-improvement-needed"
+          gh issue comment $ISSUE_NUMBER --body "✅ Flow lesson saved to \`$LESSON_FILE\`. Auto-fix will use this to improve future resolutions."
+
+  # Issue 关闭时检查是否填了问卷
+  check-on-close:
+    if: |
+      github.event_name == 'issues' &&
+      github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Check flow-improvement-needed
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          # Check if issue has flow-improvement-needed label
+          LABELS=$(gh issue view $ISSUE_NUMBER --json labels --jq '.labels[].name')
+
+          if echo "$LABELS" | grep -q "flow-improvement-needed"; then
+            # Check if a flow-lesson comment was already processed
+            COMMENTS=$(gh issue view $ISSUE_NUMBER --json comments --jq '.comments[].body')
+            if echo "$COMMENTS" | grep -q "Flow lesson saved"; then
+              echo "Lesson already saved, OK"
+            else
+              gh issue comment $ISSUE_NUMBER --body "⚠️ Issue closed but flow improvement lesson not submitted.
+
+              Please submit a flow lesson to improve the auto-fix process. Reply with \`flow-lesson\` and the template."
+            fi
+          fi
