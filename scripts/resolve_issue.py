@@ -85,7 +85,7 @@ def create_installation_token() -> str:
 
     _token_cache["token"] = data["token"]
     _token_cache["expires_at"] = time.time() + 3300  # 55 min (token lasts 1h, refresh early)
-    print(f"[token] Refreshed installation token (expires in ~55 min)")
+    print("[token] Refreshed installation token (expires in ~55 min)")
     return data["token"]
 
 
