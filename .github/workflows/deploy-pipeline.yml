@@ -1,0 +1,313 @@
+name: Deploy Pipeline
+
+# Reusable workflow: 部署流水线骨架
+# 流程仓定义流程，消费仓定义流程活动（参数）
+#
+# 用法:
+#   uses: link-seek/issue-resolver/.github/workflows/deploy-pipeline.yml@main
+#   with:
+#     image-tag: ${{ github.event.package_version.name }}
+#     runner-label: eap-prod
+#     ghcr-image: ghcr.io/link-seek/eap-backend
+#     acr-registry: crpi-xxx.aliyuncs.com
+#     acr-namespace: eap-app
+#     acr-repo: backend
+#     frontend-url: https://www.example.com
+#     api-url: https://api.example.com
+#     issue-repo: link-seek/enterprise-architecture-platform
+#     deploy-script: /opt/eap/eap-autodeploy.sh
+#     rollback-script: scripts/deploy/rollback.sh
+#     backup-script: scripts/deploy/backup.sh
+#   secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      image-tag:
+        description: 'Image tag to deploy'
+        required: true
+        type: string
+      runner-label:
+        description: 'Self-hosted runner label (e.g. eap-prod)'
+        required: true
+        type: string
+      ghcr-image:
+        description: 'GHCR image path (e.g. ghcr.io/link-seek/eap-backend)'
+        required: true
+        type: string
+      acr-registry:
+        description: 'ACR registry URL'
+        required: true
+        type: string
+      acr-namespace:
+        description: 'ACR namespace'
+        required: true
+        type: string
+      acr-repo:
+        description: 'ACR repo name'
+        required: false
+        default: 'backend'
+        type: string
+      frontend-url:
+        description: 'Frontend public URL for smoke test'
+        required: true
+        type: string
+      api-url:
+        description: 'API public URL for smoke test'
+        required: true
+        type: string
+      issue-repo:
+        description: 'Repo to create issue on failure (owner/repo)'
+        required: true
+        type: string
+      deploy-script:
+        description: 'Deploy script path on ECS (executed by runner)'
+        required: false
+        default: '/opt/eap/eap-autodeploy.sh'
+        type: string
+      rollback-script:
+        description: 'Rollback script path on ECS (empty = skip)'
+        required: false
+        default: ''
+        type: string
+      backup-script:
+        description: 'Backup script path on ECS (empty = skip)'
+        required: false
+        default: ''
+        type: string
+      consumer-repo:
+        description: 'Consumer repo for checkout (owner/repo)'
+        required: false
+        default: ''
+        type: string
+
+    secrets:
+      ACR_USERNAME:
+        required: true
+      ACR_PASSWORD:
+        required: true
+      GHCR_PAT:
+        required: false
+
+permissions:
+  packages: read
+  contents: read
+  issues: write
+
+jobs:
+  sync-to-acr:
+    name: Sync GHCR → ACR
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ inputs.image-tag }}
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.acr-registry }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Pull from GHCR and push to ACR
+        env:
+          TAG: ${{ inputs.image-tag }}
+          GHCR_IMAGE: ${{ inputs.ghcr-image }}
+          ACR_REGISTRY: ${{ inputs.acr-registry }}
+          ACR_NAMESPACE: ${{ inputs.acr-namespace }}
+          ACR_REPO: ${{ inputs.acr-repo }}
+        run: |
+          GHCR_IMG="${GHCR_IMAGE}:${TAG}"
+          ACR_IMG="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPO}"
+
+          echo "Pulling $GHCR_IMG ..."
+          docker pull "$GHCR_IMG"
+
+          docker tag "$GHCR_IMG" "${ACR_IMG}:${TAG}"
+          docker tag "$GHCR_IMG" "${ACR_IMG}:latest"
+          echo "Pushing to ACR ..."
+          docker push "${ACR_IMG}:${TAG}"
+          docker push "${ACR_IMG}:latest"
+
+      - name: Clean old ACR tags (keep latest 10)
+        env:
+          ACR_REGISTRY: ${{ inputs.acr-registry }}
+          ACR_NAMESPACE: ${{ inputs.acr-namespace }}
+          ACR_REPO: ${{ inputs.acr-repo }}
+          AUTH: ${{ secrets.ACR_USERNAME }}:${{ secrets.ACR_PASSWORD }}
+        run: |
+          REPO="${ACR_NAMESPACE}/${ACR_REPO}"
+          TAGS=$(curl -s -u "$AUTH" "https://$ACR_REGISTRY/v2/$REPO/tags/list" | jq -r '.tags[]' | grep -v latest | sort -r)
+          COUNT=$(echo "$TAGS" | grep -c . || true)
+          echo "Current tags (excl latest): $COUNT"
+          if [ "$COUNT" -gt 10 ]; then
+            OLD=$(echo "$TAGS" | tail -n $((COUNT - 10)))
+            for TAG in $OLD; do
+              DIGEST=$(curl -s -I -u "$AUTH" -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+                "https://$ACR_REGISTRY/v2/$REPO/manifests/$TAG" | grep -i "Docker-Content-Digest" | awk '{print $2}' | tr -d '\r')
+              if [ -n "$DIGEST" ]; then
+                echo "Deleting old ACR tag: $TAG (digest: $DIGEST)"
+                curl -s -X DELETE -u "$AUTH" "https://$ACR_REGISTRY/v2/$REPO/manifests/$DIGEST" || true
+              fi
+            done
+          fi
+
+  backup:
+    name: Backup
+    needs: sync-to-acr
+    runs-on: ${{ inputs.runner-label }}
+    if: inputs.backup-script != ''
+    steps:
+      - name: Run backup script
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          echo "Running backup: ${{ inputs.backup-script }}"
+          ${{ inputs.backup-script }}
+
+  deploy:
+    name: Deploy to ECS
+    needs: [sync-to-acr, backup]
+    if: always() && needs.sync-to-acr.result == 'success'
+    runs-on: ${{ inputs.runner-label }}
+    environment: production
+    steps:
+      - name: Run deploy script
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          ACR_REGISTRY: ${{ inputs.acr-registry }}
+          ACR_NAMESPACE: ${{ inputs.acr-namespace }}
+          ACR_REPO: ${{ inputs.acr-repo }}
+        run: |
+          echo "=== Deploying tag: $IMAGE_TAG ==="
+          ${{ inputs.deploy-script }}
+
+      - name: Health check (local)
+        run: |
+          echo "=== Health check ==="
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8080/health 2>/dev/null; then
+              echo ""
+              echo "Backend healthy!"
+              exit 0
+            fi
+            echo "Waiting... ($i/15)"
+            sleep 2
+          done
+          echo "ERROR: Health check failed after 30s"
+          exit 1
+
+  smoke-test:
+    name: Smoke Test
+    needs: deploy
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.smoke.outcome }}
+    steps:
+      - name: Smoke test — Backend API
+        id: smoke
+        run: |
+          FAIL_REASON=""
+          API_URL="${{ inputs.api-url }}"
+          FE_URL="${{ inputs.frontend-url }}"
+
+          echo "=== Test 1: Backend health ==="
+          HEALTH=$(curl -sf -o /dev/null -w "%{http_code}" "$API_URL/health" 2>/dev/null || echo "000")
+          echo "Backend health: $HEALTH"
+          if [ "$HEALTH" != "200" ]; then
+            FAIL_REASON="Backend health returned $HEALTH"
+            echo "fail_reason=$FAIL_REASON" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "=== Test 2: GraphQL endpoint ==="
+          GRAPHQL=$(curl -sf -o /dev/null -w "%{http_code}" \
+            -X POST "$API_URL/graphql" \
+            -H "Content-Type: application/json" \
+            -d '{"query":"{ __typename }"}' 2>/dev/null || echo "000")
+          echo "GraphQL endpoint: $GRAPHQL"
+          if [ "$GRAPHQL" != "200" ]; then
+            FAIL_REASON="GraphQL endpoint returned $GRAPHQL"
+            echo "fail_reason=$FAIL_REASON" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "=== Test 3: Frontend serves HTML ==="
+          FRONTEND=$(curl -sf -o /dev/null -w "%{http_code}" "$FE_URL/" 2>/dev/null || echo "000")
+          echo "Frontend: $FRONTEND"
+          if [ "$FRONTEND" != "200" ]; then
+            FAIL_REASON="Frontend returned $FRONTEND"
+            echo "fail_reason=$FAIL_REASON" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "All smoke tests passed"
+
+  rollback:
+    name: Rollback
+    needs: [deploy, smoke-test]
+    runs-on: ${{ inputs.runner-label }}
+    if: always() && needs.smoke-test.result == 'failure' && inputs.rollback-script != ''
+    steps:
+      - name: Run rollback script
+        env:
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          echo "=== Rolling back ==="
+          ${{ inputs.rollback-script }}
+
+  create-issue:
+    name: Create Issue on Failure
+    needs: [deploy, smoke-test, rollback]
+    runs-on: ubuntu-latest
+    if: always() && needs.smoke-test.result == 'failure'
+    steps:
+      - name: Create deploy-broken issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const [owner, repo] = '${{ inputs.issue-repo }}'.split('/');
+            const api = github.rest;
+
+            const smokeResult = '${{ needs.smoke-test.result }}';
+            const rollbackResult = '${{ needs.rollback.result }}';
+
+            let labels = ['deploy-broken'];
+            let body = `## Deploy Failed
+
+            **Image tag**: ${{ inputs.image-tag }}
+            **Smoke test**: ${smokeResult}
+            **Rollback**: ${rollbackResult || 'skipped'}
+
+            **API URL**: ${{ inputs.api-url }}
+            **Frontend URL**: ${{ inputs.frontend-url }}
+
+            ### Pipeline run
+            [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            `;
+
+            if (rollbackResult === 'success') {
+              body += '\n### Rollback completed\nThe previous version has been restored.';
+            } else if (rollbackResult === ':skipped') {
+              body += '\n### No rollback configured\nManual intervention required.';
+            } else {
+              body += '\n### Rollback failed or not configured\nManual intervention required.';
+              labels.push('critical');
+            }
+
+            const issue = await api.issues.create({
+              owner,
+              repo,
+              title: `deploy-broken: smoke test failed (tag ${{ inputs.image-tag }})`,
+              body,
+              labels
+            });
+
+            core.info(`Created issue #${issue.data.number} in ${owner}/${repo}`);
