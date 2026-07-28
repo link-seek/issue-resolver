@@ -284,9 +284,8 @@ jobs:
           E2E_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
         run: |
-          SPECS=$(cat ../.github/e2e-smoke-specs.txt | grep -v '^#' | grep -v '^$' | xargs)
-          echo "Running specs: $SPECS"
-          npx playwright test $SPECS
+          echo "Running @smoke tagged tests"
+          npx playwright test --grep @smoke
 
   rollback:
     name: Rollback
