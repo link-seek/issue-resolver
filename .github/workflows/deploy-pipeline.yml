@@ -223,8 +223,8 @@ jobs:
     name: Smoke Test
     needs: deploy
     if: always() && needs.deploy.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: ${{ inputs.runner-label }}
+    timeout-minutes: 10
     outputs:
       result: ${{ steps.smoke.outcome }}
     steps:
@@ -235,7 +235,7 @@ jobs:
           FE_URL="${{ inputs.frontend-url }}"
 
           echo "=== Test 1: Backend health ==="
-          HEALTH=$(curl -sf -o /dev/null -w "%{http_code}" "$API_URL/health" 2>/dev/null || echo "000")
+          HEALTH=$(curl -sf --connect-timeout 10 --max-time 30 -o /dev/null -w "%{http_code}" "$API_URL/health" 2>/dev/null || echo "000")
           echo "Backend health: $HEALTH"
           if [ "$HEALTH" != "200" ]; then
             echo "fail_reason=Backend health returned $HEALTH" >> $GITHUB_OUTPUT
@@ -243,7 +243,7 @@ jobs:
           fi
 
           echo "=== Test 2: GraphQL endpoint ==="
-          GRAPHQL=$(curl -sf -o /dev/null -w "%{http_code}" \
+          GRAPHQL=$(curl -sf --connect-timeout 10 --max-time 30 -o /dev/null -w "%{http_code}" \
             -X POST "$API_URL/graphql" \
             -H "Content-Type: application/json" \
             -d '{"query":"{ __typename }"}' 2>/dev/null || echo "000")
@@ -254,7 +254,7 @@ jobs:
           fi
 
           echo "=== Test 3: Frontend serves HTML ==="
-          FRONTEND=$(curl -sf -o /dev/null -w "%{http_code}" "$FE_URL/" 2>/dev/null || echo "000")
+          FRONTEND=$(curl -sf --connect-timeout 10 --max-time 30 -o /dev/null -w "%{http_code}" "$FE_URL/" 2>/dev/null || echo "000")
           echo "Frontend: $FRONTEND"
           if [ "$FRONTEND" != "200" ]; then
             echo "fail_reason=Frontend returned $FRONTEND" >> $GITHUB_OUTPUT
@@ -269,18 +269,13 @@ jobs:
           repository: ${{ inputs.consumer-repo }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Install dependencies
         working-directory: frontend
         run: npm install
 
       - name: Install Playwright chromium
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
 
       - name: Run E2E smoke tests
         working-directory: frontend
