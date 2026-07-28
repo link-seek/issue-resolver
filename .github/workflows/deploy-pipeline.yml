@@ -86,6 +86,10 @@ on:
         required: true
       ACR_PASSWORD:
         required: true
+      APP_SEED_ADMIN_EMAIL:
+        required: false
+      APP_SEED_ADMIN_PASSWORD:
+        required: false
       GHCR_PAT:
         required: false
 
@@ -178,15 +182,23 @@ jobs:
     runs-on: ${{ inputs.runner-label }}
     environment: production
     steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.consumer-repo }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run deploy script
         env:
           IMAGE_TAG: ${{ inputs.image-tag }}
           ACR_REGISTRY: ${{ inputs.acr-registry }}
           ACR_NAMESPACE: ${{ inputs.acr-namespace }}
           ACR_REPO: ${{ inputs.acr-repo }}
+          APP_SEED_ADMIN_EMAIL: ${{ secrets.APP_SEED_ADMIN_EMAIL }}
+          APP_SEED_ADMIN_PASSWORD: ${{ secrets.APP_SEED_ADMIN_PASSWORD }}
         run: |
           echo "=== Deploying tag: $IMAGE_TAG ==="
-          ${{ inputs.deploy-script }}
+          bash ${{ inputs.deploy-script }}
 
       - name: Health check (local)
         run: |
@@ -206,6 +218,7 @@ jobs:
   smoke-test:
     name: Smoke Test
     needs: deploy
+    if: always() && needs.deploy.result == 'success'
     runs-on: ubuntu-latest
     outputs:
       result: ${{ steps.smoke.outcome }}
