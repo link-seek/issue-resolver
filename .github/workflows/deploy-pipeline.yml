@@ -90,6 +90,10 @@ on:
         required: false
       APP_SEED_ADMIN_PASSWORD:
         required: false
+      SMOKE_TEST_EMAIL:
+        required: false
+      SMOKE_TEST_PASSWORD:
+        required: false
       GHCR_PAT:
         required: false
 
@@ -220,13 +224,13 @@ jobs:
     needs: deploy
     if: always() && needs.deploy.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       result: ${{ steps.smoke.outcome }}
     steps:
-      - name: Smoke test — Backend API
+      - name: Quick API health check
         id: smoke
         run: |
-          FAIL_REASON=""
           API_URL="${{ inputs.api-url }}"
           FE_URL="${{ inputs.frontend-url }}"
 
@@ -234,8 +238,7 @@ jobs:
           HEALTH=$(curl -sf -o /dev/null -w "%{http_code}" "$API_URL/health" 2>/dev/null || echo "000")
           echo "Backend health: $HEALTH"
           if [ "$HEALTH" != "200" ]; then
-            FAIL_REASON="Backend health returned $HEALTH"
-            echo "fail_reason=$FAIL_REASON" >> $GITHUB_OUTPUT
+            echo "fail_reason=Backend health returned $HEALTH" >> $GITHUB_OUTPUT
             exit 1
           fi
 
@@ -246,8 +249,7 @@ jobs:
             -d '{"query":"{ __typename }"}' 2>/dev/null || echo "000")
           echo "GraphQL endpoint: $GRAPHQL"
           if [ "$GRAPHQL" != "200" ]; then
-            FAIL_REASON="GraphQL endpoint returned $GRAPHQL"
-            echo "fail_reason=$FAIL_REASON" >> $GITHUB_OUTPUT
+            echo "fail_reason=GraphQL endpoint returned $GRAPHQL" >> $GITHUB_OUTPUT
             exit 1
           fi
 
@@ -255,12 +257,41 @@ jobs:
           FRONTEND=$(curl -sf -o /dev/null -w "%{http_code}" "$FE_URL/" 2>/dev/null || echo "000")
           echo "Frontend: $FRONTEND"
           if [ "$FRONTEND" != "200" ]; then
-            FAIL_REASON="Frontend returned $FRONTEND"
-            echo "fail_reason=$FAIL_REASON" >> $GITHUB_OUTPUT
+            echo "fail_reason=Frontend returned $FRONTEND" >> $GITHUB_OUTPUT
             exit 1
           fi
 
-          echo "All smoke tests passed"
+          echo "API smoke tests passed"
+
+      - name: Checkout consumer repo for E2E
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.consumer-repo }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Install Playwright chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E smoke tests
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: ${{ inputs.frontend-url }}
+          E2E_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
+          E2E_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
+        run: |
+          SPECS=$(cat ../.github/e2e-smoke-specs.txt | grep -v '^#' | grep -v '^$' | xargs)
+          echo "Running specs: $SPECS"
+          npx playwright test $SPECS
 
   rollback:
     name: Rollback
