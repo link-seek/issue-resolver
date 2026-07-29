@@ -8,6 +8,11 @@ on:
         required: false
         default: 'oh'
         type: string
+      issue-mention:
+        description: 'Mention string that triggers the to-issue flow'
+        required: false
+        default: 'issue'
+        type: string
     secrets:
       LLM_API_KEY:
         required: true
@@ -31,9 +36,11 @@ permissions:
 jobs:
   discuss:
     if: |
-      (github.event_name == 'discussion_comment' && contains(github.event.comment.body, inputs.mention) &&
+      (github.event_name == 'discussion_comment' &&
+        (contains(github.event.comment.body, inputs.mention) || contains(github.event.comment.body, inputs.issue-mention)) &&
         (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER')) ||
-      (github.event_name == 'discussion' && contains(github.event.discussion.body, inputs.mention) &&
+      (github.event_name == 'discussion' &&
+        (contains(github.event.discussion.body, inputs.mention) || contains(github.event.discussion.body, inputs.issue-mention)) &&
         (github.event.discussion.author_association == 'OWNER' || github.event.discussion.author_association == 'COLLABORATOR' || github.event.discussion.author_association == 'MEMBER'))
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -44,6 +51,18 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+
+      - name: Determine discuss mode
+        id: mode
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body || github.event.discussion.body }}
+          ISSUE_MENTION: ${{ inputs.issue-mention }}
+        run: |
+          if echo "$COMMENT_BODY" | grep -q "@$ISSUE_MENTION"; then
+            echo "mode=to-issue" >> $GITHUB_OUTPUT
+          else
+            echo "mode=discuss" >> $GITHUB_OUTPUT
+          fi
 
       - name: Install Obscura
         run: |
@@ -92,6 +111,7 @@ jobs:
           AGENT_ENABLE_BROWSING: "true"
           DISCUSSION_NODE_ID: ${{ github.event.discussion.node_id }}
           REPO_NAME: ${{ github.repository }}
+          DISCUSS_MODE: ${{ steps.mode.outputs.mode }}
           # For token auto-refresh
           APP_ID: ${{ secrets.APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

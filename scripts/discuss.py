@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Discussion handler — @oh triggered, LLM searches + browses + replies in Chinese."""
+"""Discussion handler — @oh for analysis, @issue for structured issue creation."""
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -22,11 +23,24 @@ def gh_graphql(token: str, query: str, variables: dict = None) -> dict:
         return json.load(resp)
 
 
+def gh_rest(token: str, method: str, path: str, data: dict = None) -> dict:
+    url = f"https://api.github.com{path}"
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(url, data=body, headers={
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json",
+    }, method=method)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.load(resp)
+
+
 def get_discussion(token: str, node_id: str) -> dict:
     query = """
     query($id: ID!) {
       node(id: $id) {
         ... on Discussion {
+          number
           title
           body
           category { name }
@@ -61,6 +75,14 @@ def reply_discussion(token: str, discussion_node_id: str, body: str):
     return gh_graphql(token, query, variables)
 
 
+def create_issue(token: str, repo: str, title: str, body: str, labels: list) -> dict:
+    return gh_rest(token, "POST", f"/repos/{repo}/issues", {
+        "title": title,
+        "body": body,
+        "labels": labels,
+    })
+
+
 def get_file_tree(max_depth: int = 3) -> str:
     """Get a file tree of the current directory, excluding noise."""
     try:
@@ -84,44 +106,37 @@ def get_file_tree(max_depth: int = 3) -> str:
         return "(无法获取文件树)"
 
 
-def main():
-    token = os.environ.get("GITHUB_TOKEN", "")
-    discussion_node_id = os.environ.get("DISCUSSION_NODE_ID", "")
-    repo_name = os.environ.get("REPO_NAME", "")
-    llm_model = os.environ.get("LLM_MODEL", "openai/glm-5.2")
-    llm_base_url = os.environ.get("LLM_BASE_URL", "https://api.modelarts-maas.com/v2")
-    llm_api_key = os.environ.get("LLM_API_KEY", "")
-    _ = (llm_model, llm_base_url, llm_api_key)  # used via env in subprocess
+def parse_issue_response(response: str) -> tuple:
+    """Parse LLM response for to-issue mode.
 
-    if not discussion_node_id:
-        print("No DISCUSSION_NODE_ID set")
-        sys.exit(1)
+    Returns (title, labels_list, body).
+    """
+    lines = response.strip().split("\n")
+    title = ""
+    labels = []
+    body_start = 0
 
-    discussion = get_discussion(token, discussion_node_id)
-    title = discussion.get("title", "")
-    body = discussion.get("body", "")
-    category = discussion.get("category", {}).get("name", "")
-    comments = discussion.get("comments", {}).get("nodes", [])
+    for i, line in enumerate(lines):
+        if line.startswith("ISSUE_TITLE:"):
+            title = line[len("ISSUE_TITLE:"):].strip()
+        elif line.startswith("ISSUE_LABELS:"):
+            labels_str = line[len("ISSUE_LABELS:"):].strip()
+            labels = [l.strip() for l in labels_str.split(",") if l.strip()]
+            body_start = i + 1
+            break
 
-    print(f"Discussion: {title}")
-    print(f"Category: {category}")
-    print(f"Comments: {len(comments)}")
+    body = "\n".join(lines[body_start:]).strip()
+    if not title:
+        title = lines[0].strip().lstrip("# ")
+        body = "\n".join(lines[1:]).strip()
+    if not body:
+        body = response
 
-    comment_history = "\n\n".join([
-        f"**{c['author']['login']}**: {c['body']}" for c in comments
-    ])
+    return title, labels, body
 
-    file_tree = get_file_tree()
-    print(f"File tree: {len(file_tree.split(chr(10)))} files")
 
-    prompt = get_template(
-        "prompt_discuss",
-        repo_name=repo_name, file_tree=file_tree, title=title,
-        category=category, body=body, comment_history=comment_history,
-    )
-
-    print("Sending to LLM...")
-
+def run_llm(prompt: str, env: dict) -> str:
+    """Run LLM agent and return response text."""
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
         f.write(prompt)
         prompt_file = f.name
@@ -235,7 +250,7 @@ with open(os.environ["RESPONSE_FILE"], 'w') as f:
          "--with", "openhands-tools",
          "python", script_file],
         capture_output=True, text=True,
-        env={**os.environ, "PROMPT_FILE": prompt_file,
+        env={**env, "PROMPT_FILE": prompt_file,
              "RESPONSE_FILE": response_file},
         cwd=os.getcwd(),
     )
@@ -245,22 +260,110 @@ with open(os.environ["RESPONSE_FILE"], 'w') as f:
 
     try:
         with open(response_file) as f:
-            llm_response = f.read().strip()
+            return f.read().strip()
     except Exception:
-        llm_response = "(LLM 未返回文本回复)"
+        return "(LLM 未返回文本回复)"
 
+
+def main():
+    token = os.environ.get("GITHUB_TOKEN", "")
+    discussion_node_id = os.environ.get("DISCUSSION_NODE_ID", "")
+    repo_name = os.environ.get("REPO_NAME", "")
+    discuss_mode = os.environ.get("DISCUSS_MODE", "discuss")
+    llm_model = os.environ.get("LLM_MODEL", "openai/glm-5.2")
+    llm_base_url = os.environ.get("LLM_BASE_URL", "https://api.modelarts-maas.com/v2")
+    llm_api_key = os.environ.get("LLM_API_KEY", "")
+    _ = (llm_model, llm_base_url, llm_api_key)  # used via env in subprocess
+
+    if not discussion_node_id:
+        print("No DISCUSSION_NODE_ID set")
+        sys.exit(1)
+
+    discussion = get_discussion(token, discussion_node_id)
+    title = discussion.get("title", "")
+    body = discussion.get("body", "")
+    category = discussion.get("category", {}).get("name", "")
+    discussion_number = discussion.get("number", "")
+    comments = discussion.get("comments", {}).get("nodes", [])
+
+    print(f"Discussion: {title}")
+    print(f"Category: {category}")
+    print(f"Comments: {len(comments)}")
+    print(f"Mode: {discuss_mode}")
+
+    comment_history = "\n\n".join([
+        f"**{c['author']['login']}**: {c['body']}" for c in comments
+    ])
+
+    file_tree = get_file_tree()
+    print(f"File tree: {len(file_tree.split(chr(10)))} files")
+
+    llm_env = {**os.environ}
+
+    if discuss_mode == "to-issue":
+        prompt = get_template(
+            "prompt_discuss_to_issue",
+            repo_name=repo_name, file_tree=file_tree, title=title,
+            category=category, body=body, comment_history=comment_history,
+            discussion_number=discussion_number,
+        )
+    else:
+        prompt = get_template(
+            "prompt_discuss",
+            repo_name=repo_name, file_tree=file_tree, title=title,
+            category=category, body=body, comment_history=comment_history,
+        )
+
+    print("Sending to LLM...")
+    llm_response = run_llm(prompt, llm_env)
     print(f"Response length: {len(llm_response)} chars")
 
-    reply_body = get_template("discussion_reply", llm_response=llm_response)
+    if discuss_mode == "to-issue":
+        issue_title, issue_labels, issue_body = parse_issue_response(llm_response)
 
-    try:
-        result_gql = reply_discussion(token, discussion_node_id, reply_body)
-        if "errors" in result_gql:
-            print(f"GraphQL errors: {result_gql['errors']}")
-        else:
-            print("Reply posted to discussion")
-    except Exception as e:
-        print(f"Failed to post reply: {e}")
+        if "fix-me" not in issue_labels:
+            issue_labels.append("fix-me")
+
+        print(f"Creating issue: {issue_title}")
+        print(f"Labels: {issue_labels}")
+
+        try:
+            issue = create_issue(token, repo_name, issue_title, issue_body, issue_labels)
+            issue_number = issue["number"]
+            issue_url = issue["html_url"]
+            print(f"Issue created: #{issue_number} {issue_url}")
+
+            reply_body = get_template(
+                "issue_created_reply",
+                issue_number=issue_number,
+                issue_title=issue_title,
+                issue_url=issue_url,
+                issue_labels=", ".join(issue_labels),
+            )
+
+            try:
+                reply_discussion(token, discussion_node_id, reply_body)
+                print("Reply posted to discussion")
+            except Exception as e:
+                print(f"Failed to post reply: {e}")
+        except Exception as e:
+            print(f"Failed to create issue: {e}")
+            error_reply = f"## Issue 创建失败\n\n错误: {e}\n\n---\n🤖 由 GLM-5.2 生成"
+            try:
+                reply_discussion(token, discussion_node_id, error_reply)
+            except Exception:
+                pass
+    else:
+        reply_body = get_template("discussion_reply", llm_response=llm_response)
+
+        try:
+            result_gql = reply_discussion(token, discussion_node_id, reply_body)
+            if "errors" in result_gql:
+                print(f"GraphQL errors: {result_gql['errors']}")
+            else:
+                print("Reply posted to discussion")
+        except Exception as e:
+            print(f"Failed to post reply: {e}")
 
 
 if __name__ == "__main__":
