@@ -1,0 +1,287 @@
+name: Resolve
+
+on:
+  workflow_call:
+    inputs:
+      issue-number:
+        description: 'Issue number for fix-me mode (empty = PR mode)'
+        required: false
+        default: ''
+        type: string
+      pr-number:
+        description: 'PR number for auto-fix/continue-fix mode (empty = issue mode)'
+        required: false
+        default: ''
+        type: string
+      head-branch:
+        description: 'PR head branch (PR mode only)'
+        required: false
+        default: ''
+        type: string
+      head-sha:
+        description: 'PR head SHA (PR mode only)'
+        required: false
+        default: ''
+        type: string
+      max-iterations:
+        description: 'Max fix iterations'
+        required: false
+        default: 10
+        type: number
+      human-review-paths:
+        description: 'JSON array of path patterns requiring human review'
+        required: false
+        default: '[]'
+        type: string
+      llm-model:
+        description: 'LLM model'
+        required: false
+        default: 'openai/glm-5.2'
+        type: string
+      llm-base-url:
+        description: 'LLM base URL'
+        required: false
+        default: 'https://api.modelarts-maas.com/v2'
+        type: string
+      timeout-minutes:
+        description: 'Timeout in minutes'
+        required: false
+        default: 360
+        type: number
+
+    secrets:
+      LLM_API_KEY:
+        required: true
+      LLM_BASE_URL:
+        required: false
+      LLM_MODEL:
+        required: false
+      APP_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
+      TAVILY_API_KEY:
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Determine mode and gather context
+        id: context
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ inputs.issue-number }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          HEAD_BRANCH: ${{ inputs.head-branch }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          MAX_ITERATIONS: ${{ inputs.max-iterations }}
+        run: |
+          if [ -n "$ISSUE_NUMBER" ]; then
+            echo "mode=issue" >> $GITHUB_OUTPUT
+            echo "target_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+
+            ISSUE_BODY=$(gh api repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER --jq '.body' 2>/dev/null || echo "")
+            ISSUE_TITLE=$(gh api repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER --jq '.title' 2>/dev/null || echo "")
+
+            echo "fix_context<<CTX_EOF" >> $GITHUB_OUTPUT
+            echo "## Issue #$ISSUE_NUMBER: $ISSUE_TITLE" >> $GITHUB_OUTPUT
+            echo "$ISSUE_BODY" >> $GITHUB_OUTPUT
+            echo "CTX_EOF" >> $GITHUB_OUTPUT
+
+          elif [ -n "$PR_NUMBER" ]; then
+            echo "mode=pr" >> $GITHUB_OUTPUT
+            echo "target_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "head_branch=$HEAD_BRANCH" >> $GITHUB_OUTPUT
+            echo "head_sha=$HEAD_SHA" >> $GITHUB_OUTPUT
+
+            REVIEW_BODY=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews \
+              --paginate \
+              --jq '[.[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED")] | sort_by(.submitted_at) | last | .body')
+
+            REVIEW_ID=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews \
+              --paginate \
+              --jq '[.[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED")] | sort_by(.submitted_at) | last | .id')
+            REVIEW_COMMENTS=""
+            if [ -n "$REVIEW_ID" ] && [ "$REVIEW_ID" != "null" ]; then
+              REVIEW_COMMENTS=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews/$REVIEW_ID/comments \
+                --jq '.[] | "\(.path):\(.line) — \(.body[:200])"' 2>/dev/null || echo "")
+            fi
+
+            CI_FAILURES=""
+            FAILED_CHECKS=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
+              --jq '.check_runs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)"' 2>/dev/null)
+            while IFS=$'\t' read -r CHECK_ID CHECK_NAME; do
+              [ -z "$CHECK_ID" ] && continue
+              echo "CI check failed: $CHECK_NAME (ID: $CHECK_ID)"
+              CI_FAILURES+="\n## CI Check Failed: $CHECK_NAME\n"
+              ANNOTATIONS=$(gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID \
+                --jq '.output.annotations[]? | select(.annotation_level == "failure" or .annotation_level == "warning") | "\(.path):\(.start_line // 1) [\(.annotation_level)] \(.message)"' 2>/dev/null || echo "")
+              if [ -n "$ANNOTATIONS" ]; then
+                CI_FAILURES+="\nStructured annotations:\n\`\`\`\n$ANNOTATIONS\n\`\`\`\n"
+              else
+                TMP_LOGS_DIR=$(mktemp -d)
+                if gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID/logs > "$TMP_LOGS_DIR/logs.zip" 2>/dev/null; then
+                  (cd "$TMP_LOGS_DIR" && unzip -o -q logs.zip 2>/dev/null || true)
+                  LOGS=$(grep -rhi "error\|fail\|panic\|not found\|FAIL:" "$TMP_LOGS_DIR" 2>/dev/null | tail -30 || echo "No error lines found in logs")
+                else
+                  LOGS="Could not fetch logs"
+                fi
+                rm -rf "$TMP_LOGS_DIR"
+                CI_FAILURES+="\n\`\`\`\n$LOGS\n\`\`\`\n"
+              fi
+            done <<< "$FAILED_CHECKS"
+
+            COMBINED="$REVIEW_BODY"
+            if [ -n "$REVIEW_COMMENTS" ]; then
+              COMBINED+="\n\n## Inline Review Comments\n$REVIEW_COMMENTS"
+            fi
+            if [ -n "$CI_FAILURES" ]; then
+              COMBINED+="\n\n## CI Test Failures (must fix)\n$CI_FAILURES"
+            fi
+
+            echo "fix_context<<CTX_EOF" >> $GITHUB_OUTPUT
+            echo -e "$COMBINED" >> $GITHUB_OUTPUT
+            echo "CTX_EOF" >> $GITHUB_OUTPUT
+
+          else
+            echo "::error::Neither issue-number nor pr-number provided"
+            exit 1
+          fi
+
+          echo "max_iterations=$MAX_ITERATIONS" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.context.outputs.head_branch || github.event.issue.number && 'main' || '' }}
+          fetch-depth: 0
+          persist-credentials: true
+          path: target-repo
+
+      - name: Check iteration limit (PR mode)
+        id: iter-check
+        if: steps.context.outputs.mode == 'pr'
+        working-directory: target-repo
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.context.outputs.target_number }}
+          MAX_ITERATIONS: ${{ steps.context.outputs.max_iterations }}
+        run: |
+          AUTO_FIX_COUNT=$(git log --oneline --grep="^auto-fix:" | wc -l | tr -d ' ')
+          echo "auto_fix_count=$AUTO_FIX_COUNT" >> $GITHUB_OUTPUT
+          echo "Auto-fix commits on branch: $AUTO_FIX_COUNT (max: $MAX_ITERATIONS)"
+
+          if [ "$AUTO_FIX_COUNT" -ge "$MAX_ITERATIONS" ]; then
+            echo "exceeded=true" >> $GITHUB_OUTPUT
+            echo "::error::Max auto-fix iterations ($MAX_ITERATIONS) reached (current: $AUTO_FIX_COUNT)"
+            BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮，review 仍有问题。在 PR 上评论 \`continue-fix\` 可再跑 3 轮自动修复。"
+            gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
+              -f body="$BODY"
+            exit 1
+          else
+            echo "exceeded=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout issue-resolver scripts
+        if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
+        uses: actions/checkout@v4
+        with:
+          repository: link-seek/issue-resolver
+          ref: main
+          path: issue-resolver-scripts
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Set up Python
+        if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Configure Git
+        if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
+        shell: bash
+        run: |
+          git config --global user.name "ai-bot"
+          git config --global user.email "bot@ai-resolver.dev"
+
+      - name: Run fix (issue mode)
+        if: ${{ steps.context.outputs.mode == 'issue' }}
+        shell: bash
+        working-directory: target-repo
+        env:
+          LLM_MODEL: ${{ secrets.LLM_MODEL || inputs.llm-model }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ steps.context.outputs.target_number }}
+          REPO_NAME: ${{ github.repository }}
+          SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          AGENT_ENABLE_BROWSING: "true"
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml \
+            python ../issue-resolver-scripts/scripts/auto_fix_issue.py
+
+      - name: Run fix (PR mode)
+        if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
+        shell: bash
+        working-directory: target-repo
+        env:
+          LLM_MODEL: ${{ secrets.LLM_MODEL || inputs.llm-model }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.context.outputs.target_number }}
+          REPO_NAME: ${{ github.repository }}
+          REVIEW_BODY: ${{ steps.context.outputs.fix_context }}
+          ITERATION: ${{ steps.iter-check.outputs.auto_fix_count }}
+          HUMAN_REVIEW_PATHS: ${{ inputs.human-review-paths }}
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml \
+            python ../issue-resolver-scripts/scripts/auto_fix_pr.py
+
+      - name: Approve pending CI workflows (PR mode)
+        if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BRANCH: ${{ steps.context.outputs.head_branch }}
+        run: |
+          sleep 15
+          for run_id in $(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_branch=$PR_BRANCH&status=action_required" --jq '.workflow_runs[].id' 2>/dev/null); do
+            echo "Approving workflow run $run_id..."
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/approve" -X POST 2>/dev/null && echo "Approved $run_id" || echo "Failed to approve $run_id"
+          done
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolve-logs
+          path: target-repo/*.log
+          retention-days: 7
+          if-no-files-found: ignore

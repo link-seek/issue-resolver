@@ -1,0 +1,161 @@
+name: CI/CD ACR
+
+on:
+  workflow_call:
+    inputs:
+      backend-paths:
+        description: 'Path filter for backend changes'
+        required: false
+        default: 'backend/**'
+        type: string
+      frontend-paths:
+        description: 'Path filter for frontend changes'
+        required: false
+        default: 'frontend/**'
+        type: string
+      ghcr-image:
+        description: 'GHCR image path (e.g. ghcr.io/link-seek/eap-backend)'
+        required: true
+        type: string
+      ghcr-keep-versions:
+        description: 'Number of GHCR versions to keep'
+        required: false
+        default: 5
+        type: number
+      oss-bucket:
+        description: 'OSS bucket for frontend deploy (empty = skip)'
+        required: false
+        default: ''
+        type: string
+      oss-region:
+        description: 'OSS region endpoint'
+        required: false
+        default: 'oss-cn-shenzhen.aliyuncs.com'
+        type: string
+      frontend-build-env:
+        description: 'JSON array of KEY=VALUE env vars for frontend build'
+        required: false
+        default: '[]'
+        type: string
+      node-version:
+        description: 'Node.js version for frontend build'
+        required: false
+        default: '24'
+        type: string
+
+    secrets:
+      GHCR_PAT:
+        required: true
+      ALIYUN_ACCESS_KEY_ID:
+        required: false
+      ALIYUN_ACCESS_KEY_SECRET:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+  actions: write
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - '${{ inputs.backend-paths }}'
+            frontend:
+              - '${{ inputs.frontend-paths }}'
+
+  build-backend:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+      - name: Build and push backend
+        id: build
+        env:
+          IMAGE: ${{ inputs.ghcr-image }}
+        run: |
+          TAG="$(date -u +%Y%m%d%H%M%S)-${{ github.sha }}"
+          docker build -t "${IMAGE}:latest" -t "${IMAGE}:${TAG}" ./backend
+          docker push "${IMAGE}:latest"
+          docker push "${IMAGE}:${TAG}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Cleanup old GHCR versions
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_PAT }}
+          KEEP: ${{ inputs.ghcr-keep-versions }}
+        run: |
+          ORG=$(echo "${{ inputs.ghcr-image }}" | sed 's|ghcr.io/||;s|/.*||')
+          PKG=$(echo "${{ inputs.ghcr-image }}" | sed 's|.*/||')
+          IDS=$(gh api /orgs/$ORG/packages/container/$PKG/versions --paginate -q ". | sort_by(.created_at) | reverse | .[${KEEP}:] | .[].id" 2>/dev/null || true)
+          for id in $IDS; do
+            echo "Deleting old GHCR version: $id"
+            gh api -X DELETE /orgs/$ORG/packages/container/$PKG/versions/$id || true
+          done
+
+  build-frontend:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.frontend == 'true' && inputs.oss-bucket != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          ENV_JSON: ${{ inputs.frontend-build-env }}
+        run: |
+          echo "$ENV_JSON" | python3 -c "
+          import sys, json, os
+          for item in json.load(sys.stdin):
+              k, v = item.split('=', 1)
+              os.environ[k] = v
+          os.execvp('npm', ['npm', 'run', 'build'])
+          "
+
+      - name: Install ossutil
+        run: |
+          curl -L -o ossutil https://gosspublic.alicdn.com/ossutil/1.7.18/ossutil64
+          chmod +x ossutil && sudo mv ossutil /usr/local/bin/ossutil
+
+      - name: Upload to OSS
+        run: |
+          ossutil config \
+            -e "${{ inputs.oss-region }}" \
+            -i "${{ secrets.ALIYUN_ACCESS_KEY_ID }}" \
+            -k "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}"
+          ossutil cp -rf frontend/dist/ "oss://${{ inputs.oss-bucket }}/" --acl public-read

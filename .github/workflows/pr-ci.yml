@@ -1,0 +1,222 @@
+name: PR CI
+
+on:
+  workflow_call:
+    inputs:
+      enable-backend-tests:
+        description: 'Run backend tests'
+        required: false
+        default: false
+        type: boolean
+      backend-test-cmd:
+        description: 'Backend test command'
+        required: false
+        default: 'cargo test --workspace'
+        type: string
+      backend-rust-toolchain:
+        description: 'Rust toolchain version'
+        required: false
+        default: '1.94'
+        type: string
+      enable-frontend-tests:
+        description: 'Run frontend build test'
+        required: false
+        default: false
+        type: boolean
+      node-version:
+        description: 'Node.js version'
+        required: false
+        default: '24'
+        type: string
+      frontend-build-cmd:
+        description: 'Frontend build command'
+        required: false
+        default: 'npx vite build'
+        type: string
+      frontend-build-env:
+        description: 'JSON array of KEY=VALUE env vars for frontend build'
+        required: false
+        default: '[]'
+        type: string
+      enable-integration:
+        description: 'Run integration + E2E tests'
+        required: false
+        default: false
+        type: boolean
+      e2e-filter:
+        description: 'Playwright test filter (e.g. --grep @smoke)'
+        required: false
+        default: '--grep @smoke'
+        type: string
+      e2e-timeout-minutes:
+        description: 'E2E test timeout'
+        required: false
+        default: 15
+        type: number
+      docker-compose-file:
+        description: 'Docker compose file for integration tests'
+        required: false
+        default: 'docker-compose.ci.yml'
+        type: string
+      backend-health-url:
+        description: 'Backend health check URL'
+        required: false
+        default: 'http://localhost:8080/health'
+        type: string
+      frontend-health-url:
+        description: 'Frontend health check URL'
+        required: false
+        default: 'http://localhost:80/health'
+        type: string
+      pipeline-contract-repo:
+        description: 'Repo for pipeline contract validation (empty = skip)'
+        required: false
+        default: 'link-seek/issue-resolver'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline-contract-check:
+    runs-on: ubuntu-latest
+    if: inputs.pipeline-contract-repo != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.pipeline-contract-repo }}
+          path: _issue-resolver
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Validate pipeline config
+        run: |
+          cd ${{ github.workspace }}
+          PYTHONPATH="_issue-resolver/scripts:$PYTHONPATH" python _issue-resolver/scripts/validate_config.py
+
+  backend-tests:
+    runs-on: ubuntu-latest
+    if: inputs.enable-backend-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ inputs.backend-rust-toolchain }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      - name: Run backend tests
+        working-directory: backend
+        run: ${{ inputs.backend-test-cmd }}
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    if: inputs.enable-frontend-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm install
+      - name: Build
+        working-directory: frontend
+        env:
+          ENV_JSON: ${{ inputs.frontend-build-env }}
+        run: |
+          echo "$ENV_JSON" | python3 -c "
+          import sys, json, os
+          for item in json.load(sys.stdin):
+              k, v = item.split('=', 1)
+              os.environ[k] = v
+          import subprocess
+          cmd = '${{ inputs.frontend-build-cmd }}'.split()
+          subprocess.execvp(cmd[0], cmd)
+          "
+
+  integration:
+    needs: [backend-tests, frontend-tests]
+    if: inputs.enable-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.e2e-timeout-minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start services
+        run: docker compose -f ${{ inputs.docker-compose-file }} up -d --build
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf ${{ inputs.backend-health-url }} 2>/dev/null; then
+              echo "Backend healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend failed to start"
+          docker compose -f ${{ inputs.docker-compose-file }} logs backend
+          exit 1
+
+      - name: Wait for frontend health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf ${{ inputs.frontend-health-url }} 2>/dev/null; then
+              echo "Frontend healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Frontend failed to start"
+          docker compose -f ${{ inputs.docker-compose-file }} logs frontend
+          exit 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Install Playwright system dependencies
+        working-directory: frontend
+        run: npx playwright install-deps chromium
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install chromium
+
+      - name: Run E2E tests
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: |
+          echo "Running E2E with filter: ${{ inputs.e2e-filter }}"
+          npx playwright test ${{ inputs.e2e-filter }} --reporter=line
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: frontend/test-results/
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f ${{ inputs.docker-compose-file }} down

@@ -1,0 +1,311 @@
+name: PR Review
+
+on:
+  workflow_call:
+    inputs:
+      enable-e2e-coverage-check:
+        description: 'Run E2E test coverage check'
+        required: false
+        default: false
+        type: boolean
+      coverage-mappings:
+        description: 'JSON array of {src_pattern, test_dir, label} for coverage check'
+        required: false
+        default: '[]'
+        type: string
+      enable-ai-review:
+        description: 'Run AI review'
+        required: false
+        default: true
+        type: boolean
+      human-review-paths:
+        description: 'JSON array of path patterns requiring human review'
+        required: false
+        default: '[]'
+        type: string
+      blocking-severities:
+        description: 'Comma-separated severity emojis that block merge'
+        required: false
+        default: '🔴,🟠'
+        type: string
+      llm-model:
+        description: 'LLM model for review'
+        required: false
+        default: 'openai/glm-5.2'
+        type: string
+      llm-base-url:
+        description: 'LLM base URL'
+        required: false
+        default: 'https://api.modelarts-maas.com/v2'
+        type: string
+      max-auto-fix-iterations:
+        description: 'Max auto-fix iterations'
+        required: false
+        default: 10
+        type: number
+      review-timeout-minutes:
+        description: 'Review timeout in minutes'
+        required: false
+        default: 360
+        type: number
+      auto-fix-workflow:
+        description: 'Workflow to dispatch for auto-fix'
+        required: false
+        default: 'pr-auto-fix.yml'
+        type: string
+
+    secrets:
+      APP_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
+      LLM_API_KEY:
+        required: true
+      LLM_MODEL:
+        required: false
+      LLM_BASE_URL:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  continue-fix:
+    if: ${{ github.event_name == 'issue_comment' && github.event.comment.body == 'continue-fix' && github.event.issue.pull_request != null && contains('OWNER,MEMBER,COLLABORATOR', github.event.comment.author_association) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log continue-fix trigger
+        env:
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          ASSOC: ${{ github.event.comment.author_association }}
+        run: |
+          echo "continue-fix on PR #$PR_NUMBER by $COMMENTER ($ASSOC)"
+
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Get PR info and dispatch auto-fix
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DISPATCH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          AUTO_FIX_WORKFLOW: ${{ inputs.auto-fix-workflow }}
+        run: |
+          PR_INFO=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER \
+            --jq '{head_branch: .head.ref, head_sha: .head.sha}')
+          HEAD_BRANCH=$(echo "$PR_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['head_branch'])")
+          HEAD_SHA=$(echo "$PR_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['head_sha'])")
+
+          echo "Dispatching auto-fix for PR #$PR_NUMBER (branch: $HEAD_BRANCH)"
+          echo "max_iterations=20 (10 original + 10 continue)"
+
+          GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
+            -f pr_number="$PR_NUMBER" \
+            -f head_branch="$HEAD_BRANCH" \
+            -f head_sha="$HEAD_SHA" \
+            -f max_iterations="20" || echo "Failed to dispatch auto-fix"
+
+      - name: React to comment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
+            -f content="rocket" 2>/dev/null || true
+
+  e2e-coverage-check:
+    if: ${{ github.event_name == 'pull_request' && inputs.enable-e2e-coverage-check }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check E2E test coverage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COVERAGE_MAPPINGS: ${{ inputs.coverage-mappings }}
+        run: |
+          CHANGED_FILES=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files --paginate --jq '.[].filename')
+
+          FRONTEND_SRC_CHANGES=$(echo "$CHANGED_FILES" | grep -E '^frontend/src/' \
+            | grep -E '^frontend/src/(views/|api/|stores/|lib/apollo)' || true)
+
+          if [ -z "$FRONTEND_SRC_CHANGES" ]; then
+            echo "No testable frontend source changes — skipping E2E coverage check"
+            exit 0
+          fi
+
+          echo "Frontend source changes:"
+          echo "$FRONTEND_SRC_CHANGES"
+
+          MISSING=()
+
+          check_area() {
+            local src_pattern="$1" test_dir="$2" label="$3"
+            if echo "$FRONTEND_SRC_CHANGES" | grep -qE "$src_pattern"; then
+              if ! echo "$CHANGED_FILES" | grep -qE "^frontend/tests/${test_dir}/.*\.spec\.ts$"; then
+                MISSING+=("$label: $src_pattern changed but no tests/${test_dir}/*.spec.ts in PR")
+              fi
+            fi
+          }
+
+          echo "$COVERAGE_MAPPINGS" | python3 -c "
+          import sys, json
+          for m in json.load(sys.stdin):
+              print(f\"{m['src_pattern']}\t{m['test_dir']}\t{m['label']}\")
+          " | while IFS=$'\t' read -r src test_dir label; do
+            check_area "$src" "$test_dir" "$label"
+          done
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "::error::E2E test coverage missing:"
+            for msg in "${MISSING[@]}"; do
+              echo "  - $msg"
+            done
+            exit 1
+          fi
+
+          echo "E2E test coverage OK — PR includes corresponding test changes"
+
+  review-ai:
+    if: ${{ github.event_name == 'pull_request' && inputs.enable-ai-review }}
+    needs: [e2e-coverage-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.review-timeout-minutes }}
+    concurrency:
+      group: review-ai-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch linked issue content for requirement coverage check
+        id: issue-context
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          PR_BODY=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER --jq '.body')
+          ISSUE_NUM=$(echo "$PR_BODY" | grep -oP '#(\d+)' | head -1 | tr -d '#')
+          
+          if [ -z "$ISSUE_NUM" ]; then
+            BRANCH=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER --jq '.head.ref')
+            ISSUE_NUM=$(echo "$BRANCH" | grep -oP 'issue-(\d+)' | head -1 | sed 's/issue-//')
+          fi
+          
+          if [ -n "$ISSUE_NUM" ]; then
+            echo "Found linked issue #$ISSUE_NUM"
+            ISSUE_BODY=$(gh api repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUM --jq '.body' 2>/dev/null || echo "")
+            ISSUE_TITLE=$(gh api repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUM --jq '.title' 2>/dev/null || echo "")
+            
+            cat > .pr-review-issue-context.md << EOF
+          ## Linked Issue Requirements (Issue #$ISSUE_NUM)
+          
+          **Title**: $ISSUE_TITLE
+          
+          **Requirements**:
+          $ISSUE_BODY
+          
+          ---
+          ## Requirement Coverage Check
+          
+          When reviewing this PR, also check:
+          1. **Completeness**: Are all requirements from the issue implemented?
+          2. **Correctness**: Does the implementation match what the issue describes?
+          3. **Gaps**: List any requirements that are NOT addressed in the code.
+          4. **Extra**: List any significant code changes NOT related to the issue requirements.
+          
+          Include a "Requirement Coverage" section in your review.
+          EOF
+            echo "has_issue=true" >> $GITHUB_OUTPUT
+          else
+            echo "No linked issue found"
+            echo "has_issue=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run OpenHands Review
+        uses: OpenHands/extensions/plugins/pr-review@main
+        with:
+          llm-model: ${{ secrets.LLM_MODEL || inputs.llm-model }}
+          llm-base-url: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check AI Review Verdict
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DISPATCH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BLOCKING_SEVERITIES: ${{ inputs.blocking-severities }}
+          AUTO_FIX_WORKFLOW: ${{ inputs.auto-fix-workflow }}
+        run: |
+          VERDICT="UNKNOWN"
+          REVIEW_BODY=""
+          for i in 1 2 3 4 5 6; do
+            sleep 5
+            REVIEW_JSON=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews \
+              --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.commit_id // \"\") == \"$HEAD_SHA\")] | sort_by(.submitted_at) | last | {state: .state, body: .body}" 2>/dev/null || echo "{}")
+            VERDICT=$(echo "$REVIEW_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
+            if [ "$VERDICT" != "null" ] && [ "$VERDICT" != "UNKNOWN" ] && [ -n "$VERDICT" ]; then
+              REVIEW_BODY=$(echo "$REVIEW_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('body',''))" 2>/dev/null || echo "")
+              break
+            fi
+            echo "Retry $i: verdict not ready yet ($VERDICT)"
+          done
+
+          echo "Latest AI review verdict: $VERDICT"
+
+          has_blocking_severity() {
+            FIRST_LINE=$(echo "$REVIEW_BODY" | head -1)
+            if echo "$FIRST_LINE" | grep -qE '^(🔴|🟠)'; then
+              return 0
+            fi
+            if echo "$REVIEW_BODY" | grep -A5 '^\*\*\[RISK ASSESSMENT\]\*\*' | grep -E '^\s*- \[Overall PR\]' | grep -qE '🔴|🟠'; then
+              return 0
+            fi
+            if echo "$REVIEW_BODY" | grep -qE '^\*\*\[CRITICAL ISSUES\]\*\*' && \
+               ! echo "$REVIEW_BODY" | grep -A1 '^\*\*\[CRITICAL ISSUES\]\*\*' | grep -qE '^(none|None|N/A|-)$'; then
+              return 0
+            fi
+            return 1
+          }
+
+          dispatch_autofix() {
+            echo "Dispatching PR Auto-Fix..."
+            GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
+              -f pr_number="$PR_NUMBER" \
+              -f head_branch="${{ github.event.pull_request.head.ref }}" \
+              -f head_sha="$HEAD_SHA" || echo "Failed to dispatch auto-fix"
+          }
+
+          if [ "$VERDICT" = "APPROVED" ]; then
+            echo "AI approved the PR"
+          elif [ "$VERDICT" = "CHANGES_REQUESTED" ] || [ "$VERDICT" = "COMMENTED" ]; then
+            if has_blocking_severity; then
+              echo "::error::AI review has Critical/Important issues, blocking merge"
+              dispatch_autofix
+              exit 1
+            else
+              echo "AI review verdict: $VERDICT, but only advisory issues — passing"
+            fi
+          else
+            echo "::error::No AI review found (got: $VERDICT)"
+            exit 1
+          fi

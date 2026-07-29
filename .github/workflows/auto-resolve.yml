@@ -1,13 +1,8 @@
-name: Auto-resolve
+name: Auto-resolve (discuss)
 
 on:
   workflow_call:
     inputs:
-      trigger-label:
-        description: 'Label that triggers the resolve flow'
-        required: false
-        default: 'fix-me'
-        type: string
       mention:
         description: 'Mention string that triggers the discuss flow'
         required: false
@@ -34,44 +29,6 @@ permissions:
   discussions: write
 
 jobs:
-  resolve:
-    if: |
-      github.event.label.name == inputs.trigger-label ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, inputs.mention) &&
-        (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    steps:
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-
-      - name: Install Obscura
-        run: |
-          curl -L https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz -o /tmp/obscura.tar.gz
-          tar xzf /tmp/obscura.tar.gz -C /usr/local/bin/
-          chmod +x /usr/local/bin/obscura
-          obscura --version || true
-
-      - uses: link-seek/issue-resolver@main
-        with:
-          llm-model: ${{ secrets.LLM_MODEL || 'openai/glm-5.2' }}
-          llm-base-url: ${{ secrets.LLM_BASE_URL || 'https://api.modelarts-maas.com/v2' }}
-          llm-api-key: ${{ secrets.LLM_API_KEY }}
-          github-token: ${{ steps.app-token.outputs.token }}
-          issue-number: ${{ github.event.issue.number }}
-          issue-type: issue
-        env:
-          SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
-          AGENT_ENABLE_BROWSING: "true"
-          # For token auto-refresh (installation tokens expire after 1h)
-          APP_ID: ${{ secrets.APP_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-
   discuss:
     if: |
       (github.event_name == 'discussion_comment' && contains(github.event.comment.body, inputs.mention) &&
