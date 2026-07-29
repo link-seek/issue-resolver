@@ -263,6 +263,36 @@ jobs:
 
           echo "API smoke tests passed"
 
+      - name: GraphQL data queries check
+        id: graphql-check
+        run: |
+          API_URL="${{ inputs.api-url }}"
+
+          check_graphql() {
+            local name="$1"
+            local query="$2"
+            echo "=== GraphQL: $name ==="
+            RESP=$(curl -sf --connect-timeout 10 --max-time 30 -X POST "$API_URL/graphql" \
+              -H "Content-Type: application/json" \
+              -d "{\"query\":\"$query\"}" 2>/dev/null || echo "")
+            if [ -z "$RESP" ]; then
+              echo "FAIL: $name - no response"
+              exit 1
+            fi
+            if echo "$RESP" | jq -e '.errors' > /dev/null 2>&1; then
+              echo "FAIL: $name - GraphQL errors: $(echo "$RESP" | jq -c '.errors')"
+              exit 1
+            fi
+            echo "OK: $name"
+          }
+
+          check_graphql "organizations" '{ organizations(filters:{deletedAt:{is_null:true}}) { nodes { id name } paginationInfo { total } } }'
+          check_graphql "valueStreams" '{ valueStreams { nodes { id name } paginationInfo { total } } }'
+          check_graphql "businessCapabilities" '{ businessCapabilities { nodes { id name } paginationInfo { total } } }'
+          check_graphql "businessProcesses" '{ businessProcesses { nodes { id name } paginationInfo { total } } }'
+
+          echo "GraphQL data queries all passed"
+
       - name: Checkout consumer repo for E2E
         uses: actions/checkout@v4
         with:
