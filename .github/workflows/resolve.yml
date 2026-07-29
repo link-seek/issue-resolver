@@ -242,7 +242,7 @@ jobs:
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml \
-            python ../issue-resolver-scripts/scripts/auto_fix_issue.py
+            python ../issue-resolver-scripts/scripts/resolve_issue.py
 
       - name: Run fix (PR mode)
         if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
