@@ -226,20 +226,21 @@ jobs:
     runs-on: ${{ inputs.runner-label }}
     timeout-minutes: 10
     outputs:
-      result: ${{ steps.smoke.outcome }}
+      result: ${{ steps.collect-results.outputs.result }}
+      failures: ${{ steps.collect-results.outputs.failures }}
     steps:
-      - name: Quick API health check
+      - name: Run all smoke tests (collective)
         id: smoke
         run: |
           API_URL="${{ inputs.api-url }}"
           FE_URL="${{ inputs.frontend-url }}"
+          FAILURES=""
 
           echo "=== Test 1: Backend health ==="
           HEALTH=$(curl -sf --connect-timeout 10 --max-time 30 -o /dev/null -w "%{http_code}" "$API_URL/health" 2>/dev/null || echo "000")
           echo "Backend health: $HEALTH"
           if [ "$HEALTH" != "200" ]; then
-            echo "fail_reason=Backend health returned $HEALTH" >> $GITHUB_OUTPUT
-            exit 1
+            FAILURES+="Backend health returned HTTP $HEALTH (expected 200)\n"
           fi
 
           echo "=== Test 2: GraphQL endpoint ==="
@@ -249,39 +250,31 @@ jobs:
             -d '{"query":"{ __typename }"}' 2>/dev/null || echo "000")
           echo "GraphQL endpoint: $GRAPHQL"
           if [ "$GRAPHQL" != "200" ]; then
-            echo "fail_reason=GraphQL endpoint returned $GRAPHQL" >> $GITHUB_OUTPUT
-            exit 1
+            FAILURES+="GraphQL endpoint returned HTTP $GRAPHQL (expected 200)\n"
           fi
 
           echo "=== Test 3: Frontend serves HTML ==="
           FRONTEND=$(curl -sf --connect-timeout 10 --max-time 30 -o /dev/null -w "%{http_code}" "$FE_URL/" 2>/dev/null || echo "000")
           echo "Frontend: $FRONTEND"
           if [ "$FRONTEND" != "200" ]; then
-            echo "fail_reason=Frontend returned $FRONTEND" >> $GITHUB_OUTPUT
-            exit 1
+            FAILURES+="Frontend returned HTTP $FRONTEND (expected 200)\n"
           fi
 
-          echo "API smoke tests passed"
-
-      - name: GraphQL data queries check
-        id: graphql-check
-        run: |
-          API_URL="${{ inputs.api-url }}"
-
+          echo "=== Test 4: GraphQL data queries ==="
           check_graphql() {
             local name="$1"
             local query="$2"
-            echo "=== GraphQL: $name ==="
+            echo "--- GraphQL: $name ---"
             RESP=$(curl -sf --connect-timeout 10 --max-time 30 -X POST "$API_URL/graphql" \
               -H "Content-Type: application/json" \
               -d "{\"query\":\"$query\"}" 2>/dev/null || echo "")
             if [ -z "$RESP" ]; then
-              echo "FAIL: $name - no response"
-              exit 1
+              FAILURES+="GraphQL $name: no response\n"
+              return
             fi
             if echo "$RESP" | jq -e '.errors' > /dev/null 2>&1; then
-              echo "FAIL: $name - GraphQL errors: $(echo "$RESP" | jq -c '.errors')"
-              exit 1
+              FAILURES+="GraphQL $name: $(echo "$RESP" | jq -c '.errors')\n"
+              return
             fi
             echo "OK: $name"
           }
@@ -291,7 +284,9 @@ jobs:
           check_graphql "businessCapabilities" '{ businessCapabilities { nodes { id name } paginationInfo { total } } }'
           check_graphql "businessProcesses" '{ businessProcesses { nodes { id name } paginationInfo { total } } }'
 
-          echo "GraphQL data queries all passed"
+          echo "failures<<FAIL_EOF" >> $GITHUB_OUTPUT
+          echo -e "$FAILURES" >> $GITHUB_OUTPUT
+          echo "FAIL_EOF" >> $GITHUB_OUTPUT
 
       - name: Checkout consumer repo for E2E
         uses: actions/checkout@v4
@@ -308,7 +303,9 @@ jobs:
         run: npx playwright install chromium
 
       - name: Run E2E smoke tests
+        id: e2e
         working-directory: frontend
+        continue-on-error: true
         env:
           E2E_BASE_URL: ${{ inputs.frontend-url }}
           E2E_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
@@ -316,6 +313,38 @@ jobs:
         run: |
           echo "Running @smoke tagged tests"
           npx playwright test --grep @smoke
+
+      - name: Collect E2E failures
+        if: steps.e2e.outcome == 'failure'
+        run: |
+          echo "E2E tests failed" >> /tmp/e2e_failure
+          echo "failures<<FAIL_EOF" >> $GITHUB_OUTPUT
+          cat test-results/*.txt 2>/dev/null || echo "E2E tests failed (see artifacts for details)" >> $GITHUB_OUTPUT
+          echo "FAIL_EOF" >> $GITHUB_OUTPUT
+
+      - name: Collect final result
+        id: collect-results
+        run: |
+          API_FAILURES="${{ steps.smoke.outputs.failures }}"
+          E2E_RESULT="${{ steps.e2e.outcome }}"
+
+          ALL_FAILURES="$API_FAILURES"
+          if [ "$E2E_RESULT" = "failure" ]; then
+            ALL_FAILURES+="E2E smoke tests failed (see playwright artifacts)\n"
+          fi
+
+          if [ -n "$(echo -e "$ALL_FAILURES" | tr -d '[:space:]')" ]; then
+            echo "result=failure" >> $GITHUB_OUTPUT
+            echo "failures<<FAIL_EOF" >> $GITHUB_OUTPUT
+            echo -e "$ALL_FAILURES" >> $GITHUB_OUTPUT
+            echo "FAIL_EOF" >> $GITHUB_OUTPUT
+            echo "::error::Smoke test failures detected"
+            exit 1
+          else
+            echo "result=success" >> $GITHUB_OUTPUT
+            echo "failures=" >> $GITHUB_OUTPUT
+            echo "All smoke tests passed"
+          fi
 
   rollback:
     name: Rollback
@@ -346,8 +375,18 @@ jobs:
 
             const smokeResult = '${{ needs.smoke-test.result }}';
             const rollbackResult = '${{ needs.rollback.result }}';
+            const failures = `${{ needs.smoke-test.outputs.failures }}`;
 
             let labels = ['deploy-broken'];
+
+            if (failures.includes('Backend health') || failures.includes('GraphQL')) {
+              labels.push('error-smoke');
+            } else if (failures.includes('E2E')) {
+              labels.push('error-smoke');
+            } else {
+              labels.push('error-deploy');
+            }
+
             let body = `## Deploy Failed
 
             **Image tag**: ${{ inputs.image-tag }}
@@ -357,13 +396,19 @@ jobs:
             **API URL**: ${{ inputs.api-url }}
             **Frontend URL**: ${{ inputs.frontend-url }}
 
+            ### Failure Details
+
+            \`\`\`
+            ${failures || 'No details collected'}
+            \`\`\`
+
             ### Pipeline run
             [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
             `;
 
             if (rollbackResult === 'success') {
               body += '\n### Rollback completed\nThe previous version has been restored.';
-            } else if (rollbackResult === ':skipped') {
+            } else if (rollbackResult === 'skipped') {
               body += '\n### No rollback configured\nManual intervention required.';
             } else {
               body += '\n### Rollback failed or not configured\nManual intervention required.';
