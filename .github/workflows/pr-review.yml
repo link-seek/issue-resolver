@@ -203,7 +203,7 @@ jobs:
 
       - name: Run Open Code Review
         id: ocr
-        uses: alibaba/open-code-review@v1
+        uses: alibaba/open-code-review@v1.8.0
         with:
           llm_url: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
           llm_auth_token: ${{ secrets.LLM_API_KEY }}
