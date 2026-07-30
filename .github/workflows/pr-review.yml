@@ -197,7 +197,7 @@ jobs:
           repository: Agent-Field/pr-af
           path: pr-af
 
-      - name: Patch entrypoint for ModelArts
+      - name: Patch entrypoint and compose for ModelArts
         working-directory: ./pr-af
         run: |
           cat > docker-entrypoint.sh <<'SH'
@@ -212,6 +212,14 @@ jobs:
           CONF
           exec "$@"
           SH
+          cat > docker-compose.override.yml <<'OV'
+          services:
+            pr-af:
+              environment:
+                - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+                - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+                - OPENAI_API_BASE=${OPENAI_API_BASE:-}
+          OV
 
       - name: Run PR-AF Deep Review
         working-directory: ./pr-af
