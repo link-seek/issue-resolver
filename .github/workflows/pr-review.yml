@@ -191,61 +191,41 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - uses: actions/checkout@v4
+      - name: Checkout PR-AF
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          repository: Agent-Field/pr-af
+          path: pr-af
 
-      - name: Fetch linked issue content for requirement coverage check
-        id: issue-context
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+      - name: Patch entrypoint for ModelArts
+        working-directory: ./pr-af
         run: |
-          PR_BODY=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER --jq '.body')
-          ISSUE_NUM=$(echo "$PR_BODY" | grep -oP '#(\d+)' | head -1 | tr -d '#')
-          
-          if [ -z "$ISSUE_NUM" ]; then
-            BRANCH=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER --jq '.head.ref')
-            ISSUE_NUM=$(echo "$BRANCH" | grep -oP 'issue-(\d+)' | head -1 | sed 's/issue-//')
-          fi
-          
-          if [ -n "$ISSUE_NUM" ]; then
-            echo "Found linked issue #$ISSUE_NUM"
-            ISSUE_BODY=$(gh api repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUM --jq '.body' 2>/dev/null || echo "")
-            ISSUE_TITLE=$(gh api repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUM --jq '.title' 2>/dev/null || echo "")
-            
-            cat > .pr-review-issue-context.md << EOF
-          ## Linked Issue Requirements (Issue #$ISSUE_NUM)
-          
-          **Title**: $ISSUE_TITLE
-          
-          **Requirements**:
-          $ISSUE_BODY
-          
-          ---
-          ## Requirement Coverage Check
-          
-          When reviewing this PR, also check:
-          1. **Completeness**: Are all requirements from the issue implemented?
-          2. **Correctness**: Does the implementation match what the issue describes?
-          3. **Gaps**: List any requirements that are NOT addressed in the code.
-          4. **Extra**: List any significant code changes NOT related to the issue requirements.
-          
-          Include a "Requirement Coverage" section in your review.
-          EOF
-            echo "has_issue=true" >> $GITHUB_OUTPUT
-          else
-            echo "No linked issue found"
-            echo "has_issue=false" >> $GITHUB_OUTPUT
-          fi
+          cat > docker-entrypoint.sh <<'SH'
+          #!/bin/sh
+          set -e
+          MODEL="${PR_AF_MODEL:-openai/glm-5.2}"
+          MODEL_KEY="${MODEL#openai/}"
+          CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+          mkdir -p "$CONFIG_DIR"
+          cat > "$CONFIG_DIR/opencode.json" <<CONF
+          {"\$schema":"https://opencode.ai/config.json","model":"${MODEL}","small_model":"${MODEL}","provider":{"openai":{"options":{"apiKey":"{env:OPENAI_API_KEY}","baseURL":"${OPENAI_BASE_URL}"},"models":{"${MODEL_KEY}":{}}}}}
+          CONF
+          exec "$@"
+          SH
 
-      - name: Run OpenHands Review
-        uses: OpenHands/extensions/plugins/pr-review@main
-        with:
-          llm-model: ${{ secrets.LLM_MODEL || inputs.llm-model }}
-          llm-base-url: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
-          llm-api-key: ${{ secrets.LLM_API_KEY }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run PR-AF Deep Review
+        working-directory: ./pr-af
+        env:
+          PR_AF_MODEL: ${{ secrets.LLM_MODEL || inputs.llm-model }}
+          OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
+          OPENAI_BASE_URL: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          docker compose up -d
+          sleep 15
+          python3 scripts/ci_runner.py
 
       - name: Check AI Review Verdict
         env:
@@ -261,7 +241,7 @@ jobs:
           for i in 1 2 3 4 5 6; do
             sleep 5
             REVIEW_JSON=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews \
-              --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.commit_id // \"\") == \"$HEAD_SHA\")] | sort_by(.submitted_at) | last | {state: .state, body: .body}" 2>/dev/null || echo "{}")
+              --jq "[.[] | select((.commit_id // \"\") == \"$HEAD_SHA\")] | sort_by(.submitted_at) | last | {state: .state, body: .body}" 2>/dev/null || echo "{}")
             VERDICT=$(echo "$REVIEW_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
             if [ "$VERDICT" != "null" ] && [ "$VERDICT" != "UNKNOWN" ] && [ -n "$VERDICT" ]; then
               REVIEW_BODY=$(echo "$REVIEW_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('body',''))" 2>/dev/null || echo "")
