@@ -140,9 +140,8 @@ jobs:
           for item in json.load(sys.stdin):
               k, v = item.split('=', 1)
               os.environ[k] = v
-          import subprocess
           cmd = '${{ inputs.frontend-build-cmd }}'.split()
-          subprocess.execvp(cmd[0], cmd)
+          os.execvp(cmd[0], cmd)
           "
 
   integration:
