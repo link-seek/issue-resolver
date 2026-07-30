@@ -234,9 +234,11 @@ jobs:
               data = json.load(f)
           comments = data.get('comments', [])
           blocking = [c for c in comments if c.get('severity') in ('critical', 'high')]
+          medium = [c for c in comments if c.get('severity') == 'medium']
           total = len(comments)
           print(f'Total findings: {total}')
           print(f'Blocking (critical/high): {len(blocking)}')
+          print(f'Medium: {len(medium)}')
           if blocking:
               print()
               print('Blocking issues:')
@@ -247,6 +249,14 @@ jobs:
                   cat = c.get('category', '?')
                   content = c.get('content', '')[:150]
                   print(f'  [{sev}] {path}:{line} ({cat}) — {content}')
+          if medium and not blocking:
+              print()
+              print('Medium issues (not blocking, not auto-fixing):')
+              for c in medium:
+                  path = c.get('path', '?')
+                  line = c.get('start_line', '?')
+                  content = c.get('content', '')[:100]
+                  print(f'  [medium] {path}:{line} — {content}')
           print(len(blocking))
           " 2>&1)
 
@@ -262,5 +272,17 @@ jobs:
               -f head_sha="$HEAD_SHA" || echo "Failed to dispatch auto-fix"
             exit 1
           else
-            echo "OCR review passed — no blocking issues"
+            MEDIUM_COUNT=$(python3 -c "
+            import json
+            with open('/tmp/ocr-result.json') as f:
+                data = json.load(f)
+            comments = data.get('comments', [])
+            medium = [c for c in comments if c.get('severity') == 'medium']
+            print(len(medium))
+            " 2>&1)
+            if [ "$MEDIUM_COUNT" -gt 0 ]; then
+              echo "OCR review passed with $MEDIUM_COUNT medium issue(s) — not blocking, not auto-fixing. Comment 'continue-fix' to manually trigger."
+            else
+              echo "OCR review passed — no blocking issues"
+            fi
           fi
