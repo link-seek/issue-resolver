@@ -191,121 +191,78 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Checkout PR-AF
-        uses: actions/checkout@v4
-        with:
-          repository: Agent-Field/pr-af
-          path: pr-af
-
-      - name: Patch entrypoint and compose for ModelArts
-        working-directory: ./pr-af
-        run: |
-          cat > docker-entrypoint.sh <<'SH'
-          #!/bin/sh
-          set -e
-          MODEL="${PR_AF_MODEL:-openai/glm-5.2}"
-          MODEL_KEY="${MODEL#openai/}"
-          CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
-          mkdir -p "$CONFIG_DIR"
-          cat > "$CONFIG_DIR/opencode.json" <<CONF
-          {"\$schema":"https://opencode.ai/config.json","model":"${MODEL}","small_model":"${MODEL}","provider":{"openai":{"options":{"apiKey":"{env:OPENAI_API_KEY}","baseURL":"${OPENAI_BASE_URL}"},"models":{"${MODEL_KEY}":{}}}}}
-          CONF
-          exec "$@"
-          SH
-          cat > docker-compose.override.yml <<'OV'
-          services:
-            pr-af:
-              environment:
-                - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-                - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
-                - OPENAI_API_BASE=${OPENAI_API_BASE:-}
-          OV
-          sed -i 's|api_key=os.getenv("OPENROUTER_API_KEY", "")|api_key=os.getenv("OPENAI_API_KEY", os.getenv("OPENROUTER_API_KEY", ""))|' src/pr_af/app.py
-          sed -i 's|api_base="https://openrouter.ai/api/v1"|api_base=os.getenv("OPENAI_API_BASE", "https://openrouter.ai/api/v1")|' src/pr_af/app.py
-
-      - name: Run PR-AF Deep Review
-        working-directory: ./pr-af
+      - name: Resolve LLM config
+        id: llm
         env:
-          PR_AF_MODEL: ${{ secrets.LLM_MODEL || inputs.llm-model }}
-          OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
-          OPENAI_API_BASE: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
-          OPENAI_BASE_URL: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
-          OPENROUTER_API_KEY: ${{ secrets.LLM_API_KEY }}
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          RAW_MODEL: ${{ secrets.LLM_MODEL || inputs.llm-model }}
         run: |
-          docker compose up -d
-          sleep 15
-          python3 scripts/ci_runner.py
+          MODEL="${RAW_MODEL#openai/}"
+          MODEL="${MODEL#anthropic/}"
+          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+          echo "Resolved model: $MODEL"
 
-      - name: Dump PR-AF container logs
-        if: always()
-        working-directory: ./pr-af
-        run: |
-          echo "=== pr-af logs ==="
-          docker compose logs pr-af --tail 100 2>&1 || true
-          echo "=== agentfield logs ==="
-          docker compose logs agentfield --tail 50 2>&1 || true
+      - name: Run Open Code Review
+        id: ocr
+        uses: alibaba/open-code-review@v1
+        with:
+          llm_url: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
+          llm_auth_token: ${{ secrets.LLM_API_KEY }}
+          llm_model: ${{ steps.llm.outputs.model }}
+          llm_use_anthropic: 'false'
+          language: '中文'
+          incremental: 'true'
+          sticky_summary: 'true'
+          github_token: ${{ steps.app-token.outputs.token }}
+          ocr_version: '1.8.0'
+          route_severity_below: 'low'
+          route_categories: 'style,documentation'
 
-      - name: Check AI Review Verdict
+      - name: Check OCR Review Verdict
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           DISPATCH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BLOCKING_SEVERITIES: ${{ inputs.blocking-severities }}
           AUTO_FIX_WORKFLOW: ${{ inputs.auto-fix-workflow }}
         run: |
-          VERDICT="UNKNOWN"
-          REVIEW_BODY=""
-          for i in 1 2 3 4 5 6; do
-            sleep 5
-            REVIEW_JSON=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews \
-              --jq "[.[] | select((.commit_id // \"\") == \"$HEAD_SHA\")] | sort_by(.submitted_at) | last | {state: .state, body: .body}" 2>/dev/null || echo "{}")
-            VERDICT=$(echo "$REVIEW_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('state','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
-            if [ "$VERDICT" != "null" ] && [ "$VERDICT" != "UNKNOWN" ] && [ -n "$VERDICT" ]; then
-              REVIEW_BODY=$(echo "$REVIEW_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('body',''))" 2>/dev/null || echo "")
-              break
-            fi
-            echo "Retry $i: verdict not ready yet ($VERDICT)"
-          done
+          if [ ! -f /tmp/ocr-result.json ]; then
+            echo "::error::OCR result file not found"
+            exit 1
+          fi
 
-          echo "Latest AI review verdict: $VERDICT"
+          BLOCKING_COUNT=$(python3 -c "
+          import json
+          with open('/tmp/ocr-result.json') as f:
+              data = json.load(f)
+          comments = data.get('comments', [])
+          blocking = [c for c in comments if c.get('severity') in ('critical', 'high')]
+          total = len(comments)
+          print(f'Total findings: {total}')
+          print(f'Blocking (critical/high): {len(blocking)}')
+          if blocking:
+              print()
+              print('Blocking issues:')
+              for c in blocking:
+                  sev = c.get('severity', '?')
+                  path = c.get('path', '?')
+                  line = c.get('start_line', '?')
+                  cat = c.get('category', '?')
+                  content = c.get('content', '')[:150]
+                  print(f'  [{sev}] {path}:{line} ({cat}) — {content}')
+          print(len(blocking))
+          " 2>&1)
 
-          has_blocking_severity() {
-            FIRST_LINE=$(echo "$REVIEW_BODY" | head -1)
-            if echo "$FIRST_LINE" | grep -qE '^(🔴|🟠)'; then
-              return 0
-            fi
-            if echo "$REVIEW_BODY" | grep -A5 '^\*\*\[RISK ASSESSMENT\]\*\*' | grep -E '^\s*- \[Overall PR\]' | grep -qE '🔴|🟠'; then
-              return 0
-            fi
-            if echo "$REVIEW_BODY" | grep -qE '^\*\*\[CRITICAL ISSUES\]\*\*' && \
-               ! echo "$REVIEW_BODY" | grep -A1 '^\*\*\[CRITICAL ISSUES\]\*\*' | grep -qE '^(none|None|N/A|-)$'; then
-              return 0
-            fi
-            return 1
-          }
+          echo "$BLOCKING_COUNT"
 
-          dispatch_autofix() {
+          NUM=$(echo "$BLOCKING_COUNT" | tail -1)
+          if [ "$NUM" -gt 0 ]; then
+            echo "::error::OCR review found $NUM blocking issues"
             echo "Dispatching PR Auto-Fix..."
             GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
               -f pr_number="$PR_NUMBER" \
               -f head_branch="${{ github.event.pull_request.head.ref }}" \
               -f head_sha="$HEAD_SHA" || echo "Failed to dispatch auto-fix"
-          }
-
-          if [ "$VERDICT" = "APPROVED" ]; then
-            echo "AI approved the PR"
-          elif [ "$VERDICT" = "CHANGES_REQUESTED" ] || [ "$VERDICT" = "COMMENTED" ]; then
-            if has_blocking_severity; then
-              echo "::error::AI review has Critical/Important issues, blocking merge"
-              dispatch_autofix
-              exit 1
-            else
-              echo "AI review verdict: $VERDICT, but only advisory issues — passing"
-            fi
-          else
-            echo "::error::No AI review found (got: $VERDICT)"
             exit 1
+          else
+            echo "OCR review passed — no blocking issues"
           fi
