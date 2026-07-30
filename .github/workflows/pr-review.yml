@@ -228,7 +228,7 @@ jobs:
             exit 1
           fi
 
-          BLOCKING_COUNT=$(python3 -c "
+          VERDICT=$(python3 -c "
           import json
           with open('/tmp/ocr-result.json') as f:
               data = json.load(f)
@@ -257,12 +257,14 @@ jobs:
                   line = c.get('start_line', '?')
                   content = c.get('content', '')[:100]
                   print(f'  [medium] {path}:{line} — {content}')
-          print(len(blocking))
+          print(f'BLOCKING={len(blocking)}')
+          print(f'MEDIUM={len(medium)}')
           " 2>&1)
 
-          echo "$BLOCKING_COUNT"
+          echo "$VERDICT"
 
-          NUM=$(echo "$BLOCKING_COUNT" | tail -1)
+          NUM=$(echo "$VERDICT" | grep '^BLOCKING=' | cut -d= -f2)
+          MED=$(echo "$VERDICT" | grep '^MEDIUM=' | cut -d= -f2)
           if [ "$NUM" -gt 0 ]; then
             echo "::error::OCR review found $NUM blocking issues"
             echo "Dispatching PR Auto-Fix..."
@@ -271,18 +273,10 @@ jobs:
               -f head_branch="${{ github.event.pull_request.head.ref }}" \
               -f head_sha="$HEAD_SHA" || echo "Failed to dispatch auto-fix"
             exit 1
+          elif [ "$MED" -gt 0 ]; then
+            echo "OCR review passed with $MED medium issue(s) — not blocking, not auto-fixing. Comment 'continue-fix' to manually trigger."
+            exit 0
           else
-            MEDIUM_COUNT=$(python3 -c "
-            import json
-            with open('/tmp/ocr-result.json') as f:
-                data = json.load(f)
-            comments = data.get('comments', [])
-            medium = [c for c in comments if c.get('severity') == 'medium']
-            print(len(medium))
-            " 2>&1)
-            if [ "$MEDIUM_COUNT" -gt 0 ]; then
-              echo "OCR review passed with $MEDIUM_COUNT medium issue(s) — not blocking, not auto-fixing. Comment 'continue-fix' to manually trigger."
-            else
-              echo "OCR review passed — no blocking issues"
-            fi
+            echo "OCR review passed — no blocking issues"
+            exit 0
           fi
