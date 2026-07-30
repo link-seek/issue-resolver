@@ -235,6 +235,15 @@ jobs:
           sleep 15
           python3 scripts/ci_runner.py
 
+      - name: Dump PR-AF container logs
+        if: always()
+        working-directory: ./pr-af
+        run: |
+          echo "=== pr-af logs ==="
+          docker compose logs pr-af --tail 100 2>&1 || true
+          echo "=== agentfield logs ==="
+          docker compose logs agentfield --tail 50 2>&1 || true
+
       - name: Check AI Review Verdict
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
