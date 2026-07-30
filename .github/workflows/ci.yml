@@ -69,7 +69,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
-        run: python scripts/pipeline_test.py non-db
+        run: python scripts/validate_pipeline.py non-db
 
   pipeline-test-db:
     needs: [lint, unit-test]
@@ -93,7 +93,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
-        run: python scripts/pipeline_test.py db
+        run: python scripts/validate_pipeline.py db
 
   pipeline-test-discussion:
     needs: [lint, unit-test]
@@ -117,4 +117,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
-        run: python scripts/pipeline_test.py discussion
+        run: python scripts/validate_pipeline.py discussion

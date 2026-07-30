@@ -14,7 +14,7 @@ import subprocess
 import sys
 
 from templates import get_template
-from resolve_issue import get_valid_token, gh_api as _gh_api_raw
+from fix_issue import get_valid_token, gh_api as _gh_api_raw
 
 
 def get_env(name: str, default: str | None = None) -> str:
@@ -54,11 +54,11 @@ def main():
 
     # Comment: started
     gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
-           {"body": get_template("auto_fix_started", iteration=iteration)})
+           {"body": get_template("fix_pr_started", iteration=iteration)})
 
     # Build prompt from review feedback
     task_prompt = get_template(
-        "prompt_auto_fix",
+        "prompt_fix_pr",
         pr_title=pr_title, repo_name=repo_name, pr_branch=pr_branch, review_body=review_body,
     )
 
@@ -73,7 +73,7 @@ def main():
     llm_config = {
         "model": model,
         "api_key": api_key,
-        "usage_id": "auto_fix_pr",
+        "usage_id": "fix_pr",
         "drop_params": True,
     }
     if base_url:
@@ -113,7 +113,7 @@ def main():
     except Exception as e:
         logger.error(f"Agent failed: {type(e).__name__}: {e}")
         gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
-               {"body": get_template("auto_fix_error", error=e)})
+               {"body": get_template("fix_pr_error", error=e)})
         sys.exit(1)
 
     # Check if agent made changes
@@ -124,14 +124,14 @@ def main():
     if not status_after:
         print("No changes detected from auto-fix")
         gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
-               {"body": get_template("auto_fix_no_changes")})
+               {"body": get_template("fix_pr_no_changes")})
         sys.exit(0)
 
     print(f"Changes detected:\n{status_after}")
 
     # Commit and push — refresh token first
     subprocess.run(["git", "add", "-A"], check=True)
-    commit_msg = get_template("auto_fix_commit", iteration=iteration)
+    commit_msg = get_template("fix_pr_commit", iteration=iteration)
     subprocess.run(["git", "commit", "-m", commit_msg], check=True)
 
     github_token = get_valid_token()
@@ -144,7 +144,7 @@ def main():
     ).stdout.strip()[:12]
 
     gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
-           {"body": get_template("auto_fix_pushed", commit_sha=commit_sha)})
+           {"body": get_template("fix_pr_pushed", commit_sha=commit_sha)})
 
     print(f"\n✅ Done! Pushed {commit_sha} to {pr_branch}")
 

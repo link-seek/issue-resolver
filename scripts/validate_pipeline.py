@@ -2,9 +2,9 @@
 """Pipeline test: validates full flow from issue/discussion creation to deployment.
 
 Usage:
-    python pipeline_test.py non-db      # fix-me issue → PR → auto-merge → deploy
-    python pipeline_test.py db          # DB fix-me issue → risk analysis → manual merge → deploy
-    python pipeline_test.py discussion  # discussion @oh → discuss job → reply
+    python validate_pipeline.py non-db      # fix-me issue → PR → auto-merge → deploy
+    python validate_pipeline.py db          # DB fix-me issue → risk analysis → manual merge → deploy
+    python validate_pipeline.py discussion  # discussion @oh → discuss job → reply
 
 Requires:
     GITHUB_TOKEN env var — GitHub PAT for API access

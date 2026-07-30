@@ -51,7 +51,7 @@ on:
       auto-fix-workflow:
         description: 'Workflow to dispatch for auto-fix'
         required: false
-        default: 'pr-auto-fix.yml'
+        default: 'on-comment-fix.yml'
         type: string
 
     secrets:

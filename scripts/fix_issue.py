@@ -234,6 +234,79 @@ def run_tests(config: dict) -> bool:
     return True
 
 
+def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
+                   max_wait: int = 1800, interval: int = 30):
+    """Poll CI checks + AI review, merge when all green.
+
+    Replaces gh pr merge --auto with explicit polling so we can
+    feed failures back to the LLM for iterative fixes.
+    """
+    print(f"Polling CI + review for PR #{pr_num} (max {max_wait}s)...")
+
+    pr_head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+
+    start = time.time()
+    while time.time() - start < max_wait:
+        github_token = get_valid_token()
+
+        checks = gh_api("GET", f"{repo_name}/commits/{pr_head_sha}/check-runs",
+                        github_token, body=None)
+        check_runs = checks.get("check_runs", []) if checks else []
+
+        failed = [c for c in check_runs if c.get("conclusion") == "failure"]
+        pending = [c for c in check_runs if c.get("status") != "completed"]
+
+        if failed:
+            failed_names = [c["name"] for c in failed]
+            print(f"CI failed: {failed_names}")
+            gh_api("POST", f"{repo_name}/issues/{pr_num}/comments", github_token, {
+                "body": f"CI checks failed: {', '.join(failed_names)}. Auto-fix will retry."
+            })
+            return
+
+        if pending:
+            elapsed = int(time.time() - start)
+            remaining = max_wait - elapsed
+            print(f"Waiting: {len(pending)} checks pending ({remaining}s remaining)")
+            time.sleep(interval)
+            continue
+
+        reviews = gh_api("GET", f"{repo_name}/pulls/{pr_num}/reviews", github_token)
+        bot_reviews = [r for r in reviews if r.get("user", {}).get("login") == "github-actions[bot]"]
+        latest_review = bot_reviews[-1] if bot_reviews else None
+
+        if latest_review and latest_review.get("state") == "APPROVED":
+            print("All CI passed + AI approved. Merging...")
+            github_token = get_valid_token()
+            result = subprocess.run(
+                ["gh", "pr", "merge", str(pr_num), "--squash", "--repo", repo_name],
+                capture_output=True, text=True,
+                env={**os.environ, "GH_TOKEN": github_token}
+            )
+            if result.returncode == 0:
+                print(f"PR #{pr_num} merged successfully!")
+                gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token, {
+                    "body": f"PR #{pr_num} merged after CI + AI review passed."
+                })
+            else:
+                print(f"Merge failed: {result.stderr}")
+            return
+
+        if latest_review and latest_review.get("state") == "CHANGES_REQUESTED":
+            print("AI review: CHANGES_REQUESTED. Auto-fix will handle.")
+            return
+
+        print("Waiting for AI review verdict...")
+        time.sleep(interval)
+
+    print(f"Timeout after {max_wait}s waiting for CI + review.")
+    gh_api("POST", f"{repo_name}/issues/{pr_num}/comments", get_valid_token(), {
+        "body": f"Timed out waiting for CI + AI review. Please check PR #{pr_num} manually."
+    })
+
+
 def main():
     print("=" * 60)
     print("Issue Resolver (OpenHands SDK + LocalWorkspace)")
@@ -287,7 +360,7 @@ def main():
     if not bot_posted_plan:
         # Phase 1: Agent assesses confidence and either plans or implements directly
         task_prompt = get_template(
-            "prompt_resolve",
+            "prompt_fix_issue",
             repo_name=repo_name, title=title, body=body, comments_text=comments_text,
         )
     elif not user_confirmed:
@@ -298,7 +371,7 @@ def main():
     else:
         # Phase 2: User confirmed, implement
         task_prompt = get_template(
-            "prompt_confirm",
+            "prompt_fix_confirm",
             repo_name=repo_name, title=title, body=body, comments_text=comments_text,
         )
 
@@ -500,19 +573,7 @@ def main():
         })
         print(f"DB changes detected, auto-merge NOT enabled for PR #{pr_num}")
     else:
-        import time
-        time.sleep(5)
-        github_token = get_valid_token()
-        result = subprocess.run(
-            ["gh", "pr", "merge", str(pr_num), "--auto", "--squash",
-             "--repo", repo_name],
-            capture_output=True, text=True,
-            env={**os.environ, "GH_TOKEN": github_token}
-        )
-        if result.returncode == 0:
-            print(f"Auto-merge enabled for PR #{pr_num}")
-        else:
-            print(f"Could not enable auto-merge: {result.stderr}")
+        poll_and_merge(repo_name, pr_num, issue_number, pr_url)
 
     # Comment on issue
     emoji = "✅" if tests_ok else "⚠️"

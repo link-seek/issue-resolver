@@ -1,4 +1,4 @@
-"""Unit tests for resolve_issue.py — call real functions with mocked I/O."""
+"""Unit tests for fix_issue.py — call real functions with mocked I/O."""
 
 import os
 import sys
@@ -13,7 +13,7 @@ class TestAnalyzeDbRisk(unittest.TestCase):
     """Test the real analyze_db_risk function."""
 
     def setUp(self):
-        from resolve_issue import analyze_db_risk
+        from fix_issue import analyze_db_risk
         self.analyze_db_risk = analyze_db_risk
 
     def test_add_column_detected_as_safe(self):
@@ -81,7 +81,7 @@ class TestRunTests(unittest.TestCase):
     """Test run_tests function with different project types."""
 
     def test_no_project_returns_true(self):
-        from resolve_issue import run_tests, DEFAULT_CONFIG
+        from fix_issue import run_tests, DEFAULT_CONFIG
         with tempfile.TemporaryDirectory() as tmpdir:
             old_cwd = os.getcwd()
             os.chdir(tmpdir)
@@ -92,13 +92,13 @@ class TestRunTests(unittest.TestCase):
                 os.chdir(old_cwd)
 
     def test_config_test_command(self):
-        from resolve_issue import run_tests
+        from fix_issue import run_tests
         config = {"test": {"command": "true"}}
         result = run_tests(config)
         self.assertTrue(result)
 
     def test_config_test_command_failure(self):
-        from resolve_issue import run_tests
+        from fix_issue import run_tests
         config = {"test": {"command": "false"}}
         result = run_tests(config)
         self.assertFalse(result)
@@ -108,7 +108,7 @@ class TestLoadConfig(unittest.TestCase):
     """Test load_config function."""
 
     def test_no_config_file_returns_defaults(self):
-        from resolve_issue import load_config, DEFAULT_CONFIG
+        from fix_issue import load_config, DEFAULT_CONFIG
         with tempfile.TemporaryDirectory() as tmpdir:
             old_cwd = os.getcwd()
             os.chdir(tmpdir)
@@ -120,7 +120,7 @@ class TestLoadConfig(unittest.TestCase):
                 os.chdir(old_cwd)
 
     def test_config_file_loaded(self):
-        from resolve_issue import load_config
+        from fix_issue import load_config
         config_content = """
 trigger:
   label: "custom-label"
@@ -145,7 +145,7 @@ test:
 class TestGhApi(unittest.TestCase):
     """Test gh_api helper with mocked HTTP."""
 
-    @patch('resolve_issue.urllib.request.urlopen')
+    @patch('fix_issue.urllib.request.urlopen')
     def test_gh_api_get_returns_json(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
@@ -153,30 +153,30 @@ class TestGhApi(unittest.TestCase):
         mock_resp.read.return_value = b'{"key": "value"}'
         mock_urlopen.return_value = mock_resp
 
-        from resolve_issue import gh_api
+        from fix_issue import gh_api
         result = gh_api("GET", "owner/repo/issues/1", "fake-token")
         self.assertEqual(result, {"key": "value"})
 
 
 class TestRebaseLogic(unittest.TestCase):
-    """Test the rebase-before-push logic in resolve_issue.py."""
+    """Test the rebase-before-push logic in fix_issue.py."""
 
-    @patch('resolve_issue.subprocess.run')
+    @patch('fix_issue.subprocess.run')
     def test_rebase_succeeds(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
-        from resolve_issue import subprocess as sp_mod
+        from fix_issue import subprocess as sp_mod
         sp_mod.run(["git", "fetch", "origin", "main"], check=True)
         sp_mod.run(["git", "rebase", "origin/main"], capture_output=True, text=True)
         self.assertEqual(mock_run.call_count, 2)
         self.assertEqual(mock_run.call_args_list[0][0][0], ["git", "fetch", "origin", "main"])
 
-    @patch('resolve_issue.subprocess.run')
+    @patch('fix_issue.subprocess.run')
     def test_rebase_fails_triggers_merge_fallback(self, mock_run):
         rebase_fail = MagicMock(returncode=1, stderr="conflict", stdout="")
         merge_success = MagicMock(returncode=0, stderr="", stdout="")
         abort = MagicMock(returncode=0, stderr="", stdout="")
         mock_run.side_effect = [rebase_fail, abort, merge_success]
-        from resolve_issue import subprocess as sp_mod
+        from fix_issue import subprocess as sp_mod
         sp_mod.run(["git", "rebase", "origin/main"], capture_output=True, text=True)
         sp_mod.run(["git", "rebase", "--abort"], check=True)
         sp_mod.run(["git", "merge", "origin/main", "--no-edit"], capture_output=True, text=True)
@@ -191,7 +191,7 @@ class TestRebaseLogic(unittest.TestCase):
 
 
 class TestPipelineTestScript(unittest.TestCase):
-    """Verify pipeline_test.py has correct modes and helpers."""
+    """Verify validate_pipeline.py has correct modes and helpers."""
 
     @classmethod
     def setUpClass(cls):
@@ -199,24 +199,24 @@ class TestPipelineTestScript(unittest.TestCase):
         os.environ.setdefault("CONSUMER_REPO", "link-seek/enterprise-architecture-platform")
 
     def test_pipeline_test_imports(self):
-        import pipeline_test
-        self.assertTrue(hasattr(pipeline_test, "test_non_db"))
-        self.assertTrue(hasattr(pipeline_test, "test_db"))
-        self.assertTrue(hasattr(pipeline_test, "test_discussion"))
+        import validate_pipeline
+        self.assertTrue(hasattr(validate_pipeline, "test_non_db"))
+        self.assertTrue(hasattr(validate_pipeline, "test_db"))
+        self.assertTrue(hasattr(validate_pipeline, "test_discussion"))
 
     def test_run_with_retry_returns_true_on_success(self):
-        import pipeline_test
-        result = pipeline_test.run_with_retry("test", lambda: True, max_retries=2)
+        import validate_pipeline
+        result = validate_pipeline.run_with_retry("test", lambda: True, max_retries=2)
         self.assertTrue(result)
 
     def test_run_with_retry_returns_false_on_failure(self):
-        import pipeline_test
-        result = pipeline_test.run_with_retry("test", lambda: False, max_retries=2)
+        import validate_pipeline
+        result = validate_pipeline.run_with_retry("test", lambda: False, max_retries=2)
         self.assertFalse(result)
 
     def test_close_pr_if_open_handles_error(self):
-        import pipeline_test
-        close_pr_if_open = pipeline_test.close_pr_if_open
+        import validate_pipeline
+        close_pr_if_open = validate_pipeline.close_pr_if_open
         result = close_pr_if_open(999999)
         self.assertIsNone(result)
 

@@ -1,4 +1,4 @@
-name: Auto-resolve (discuss)
+name: Discuss
 
 on:
   workflow_call:

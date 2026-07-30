@@ -77,7 +77,7 @@ runs:
               REPO_NAME: ${{ github.repository }}
           run: |
               uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
-                python ../issue-resolver-plugin/scripts/resolve_issue.py
+                python ../issue-resolver-plugin/scripts/fix_issue.py
 
         - name: Upload logs
           uses: actions/upload-artifact@v4

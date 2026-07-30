@@ -2,7 +2,7 @@
 """Validate .issue-resolver.yml — lightweight contract check for consumer repos.
 
 Verifies:
-1. All required config fields exist (reuses DEFAULT_CONFIG from resolve_issue.py)
+1. All required config fields exist (reuses DEFAULT_CONFIG from fix_issue.py)
 2. pipeline_test + deploy sections present (needed for pipeline tests)
 3. test.command references valid build files (Cargo.toml / package.json)
 4. .github/workflows/issue-resolver.yml exists
@@ -18,7 +18,7 @@ import re
 import sys
 from pathlib import Path
 
-from resolve_issue import DEFAULT_CONFIG, load_config
+from fix_issue import DEFAULT_CONFIG, load_config
 
 
 def get_required_fields_from_defaults() -> list[str]:
