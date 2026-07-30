@@ -228,16 +228,12 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
           OPENAI_API_BASE: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
           OPENAI_BASE_URL: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
+          OPENROUTER_API_KEY: ${{ secrets.LLM_API_KEY }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          echo "DEBUG: OPENAI_API_KEY length=${#OPENAI_API_KEY}"
-          echo "DEBUG: OPENAI_BASE_URL=$OPENAI_BASE_URL"
-          echo "DEBUG: PR_AF_MODEL=$PR_AF_MODEL"
           docker compose up -d
           sleep 15
-          echo "DEBUG: container env check"
-          docker compose exec pr-af sh -c 'echo "OPENAI_API_KEY length=${#OPENAI_API_KEY}; OPENAI_BASE_URL=$OPENAI_BASE_URL"' 2>&1 || true
           python3 scripts/ci_runner.py
 
       - name: Dump PR-AF container logs
