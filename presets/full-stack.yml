@@ -1,0 +1,12 @@
+# Preset: Full Stack (Rust + React + SQLite)
+#
+# Combines rust-sea-orm-sqlite and react-vite presets.
+# Last-wins semantics: later presets override earlier ones.
+#
+# Usage in .issue-resolver.yml:
+#   extends:
+#     - full-stack
+
+extends:
+  - rust-sea-orm-sqlite
+  - react-vite
