@@ -194,12 +194,15 @@ jobs:
 
             # Dispatch L2 (capability-resolver) to upgrade L1's capability
             # L2 will classify the failure, upgrade L1, and retry
+            # Use gh api with --raw-field to avoid bash interpreting backticks in FIX_CONTEXT
             echo "Dispatching L2 (capability-resolver)..."
-            gh workflow run capability-resolver.yml --repo link-seek/issue-resolver \
-              -f consumer-repo="$GITHUB_REPOSITORY" \
-              -f pr-number="$PR_NUMBER" \
-              -f head-sha="$HEAD_SHA" \
-              -f ci-failures="$FIX_CONTEXT" \
+            gh api repos/link-seek/issue-resolver/actions/workflows/capability-resolver.yml/dispatches \
+              -X POST \
+              -f ref=main \
+              -f "inputs[consumer-repo]=$GITHUB_REPOSITORY" \
+              -f "inputs[pr-number]=$PR_NUMBER" \
+              -f "inputs[head-sha]=$HEAD_SHA" \
+              --raw-field "inputs[ci-failures]=$FIX_CONTEXT" \
               || echo "Failed to dispatch L2 (capability-resolver may not exist yet)"
 
             BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮仍未通过。已触发 L2 (capability-resolver) 分析能力缺口并升级 L1。"
