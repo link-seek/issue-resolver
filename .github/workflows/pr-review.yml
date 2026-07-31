@@ -36,13 +36,13 @@ on:
       max-auto-fix-iterations:
         description: 'Max auto-fix iterations'
         required: false
-        default: 10
-        type: number
+        default: '10'
+        type: string
       review-timeout-minutes:
         description: 'Review timeout in minutes'
         required: false
-        default: 360
-        type: number
+        default: '360'
+        type: string
       auto-fix-workflow:
         description: 'Workflow to dispatch for auto-fix'
         required: false

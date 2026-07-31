@@ -26,8 +26,8 @@ on:
       max-iterations:
         description: 'Max fix iterations'
         required: false
-        default: 10
-        type: number
+        default: '10'
+        type: string
       human-review-paths:
         description: 'JSON array of path patterns requiring human review'
         required: false
@@ -41,8 +41,8 @@ on:
       timeout-minutes:
         description: 'Timeout in minutes'
         required: false
-        default: 360
-        type: number
+        default: '360'
+        type: string
 
     secrets:
       LLM_API_KEY_1:
