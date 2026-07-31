@@ -1,0 +1,35 @@
+# Preset: React + Vite + Playwright
+#
+# Provides capability knowledge for projects using:
+# - React frontend with Vite
+# - Playwright E2E tests
+# - @smoke tag for CI test filtering
+#
+# Usage in .issue-resolver.yml:
+#   extends:
+#     - react-vite
+
+fix_config:
+  extra_knowledge: |
+    ## E2E 测试调试规则
+    当 E2E 测试报告 `加载失败|加载中` 仍可见时：
+    1. 检查 PR 是否改了权限/过滤逻辑（如 space_service.rs）
+    2. 检查测试用户是否有必要的权限记录（如 space_members）
+    3. 检查 API 是否返回空数据（可能是新过滤条件阻断）
+    4. 在 test helper（如 login()）里确保测试用户有完整的权限设置
+
+    ## Playwright 测试规则
+    - 使用 { tag: '@smoke' } 标记 CI 中运行的测试
+    - 使用 graphql-aware helper 处理 GraphQL 请求
+    - 页面加载后先检查 heading 可见，再检查 loading 状态消失
+    - 测试用户需要完整的权限设置，不能只登录不给权限
+
+  context_sources:
+    - ci-log
+    - pr-diff
+    - test-source
+
+tech_stack:
+  - react
+  - node
+  - e2e
