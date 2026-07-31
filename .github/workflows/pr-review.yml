@@ -173,7 +173,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' && inputs.enable-ai-review }}
     needs: [e2e-coverage-check]
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.review-timeout-minutes }}
+    timeout-minutes: 360
     concurrency:
       group: review-ai-${{ github.event.pull_request.number }}
       cancel-in-progress: true

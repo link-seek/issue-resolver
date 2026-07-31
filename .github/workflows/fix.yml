@@ -39,7 +39,7 @@ on:
         default: 'openai/glm-5.2'
         type: string
       timeout-minutes:
-        description: 'Timeout in minutes'
+        description: 'Timeout in minutes (unused, kept for compatibility)'
         required: false
         default: '360'
         type: string
@@ -67,7 +67,7 @@ permissions:
 jobs:
   resolve:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout-minutes }}
+    timeout-minutes: 360
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
