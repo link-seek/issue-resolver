@@ -75,6 +75,17 @@ def reply_discussion(token: str, discussion_node_id: str, body: str):
     return gh_graphql(token, query, variables)
 
 
+def mark_discussion_answer(token: str, comment_node_id: str):
+    query = """
+    mutation($id: ID!) {
+      markDiscussionCommentAsAnswer(input: {id: $id}) {
+        discussion { id }
+      }
+    }
+    """
+    return gh_graphql(token, query, {"id": comment_node_id})
+
+
 def create_issue(token: str, repo: str, title: str, body: str, labels: list) -> dict:
     return gh_rest(token, "POST", f"/repos/{repo}/issues", {
         "title": title,
@@ -342,7 +353,14 @@ def main():
             )
 
             try:
-                reply_discussion(token, discussion_node_id, reply_body)
+                result_gql = reply_discussion(token, discussion_node_id, reply_body)
+                comment_id = result_gql.get("data", {}).get("addDiscussionComment", {}).get("comment", {}).get("id")
+                if comment_id:
+                    try:
+                        mark_discussion_answer(token, comment_id)
+                        print("Discussion marked as answered")
+                    except Exception as e:
+                        print(f"Failed to mark discussion as answered: {e}")
                 print("Reply posted to discussion")
             except Exception as e:
                 print(f"Failed to post reply: {e}")
