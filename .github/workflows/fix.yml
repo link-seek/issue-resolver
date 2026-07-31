@@ -190,7 +190,18 @@ jobs:
           if [ "$AUTO_FIX_COUNT" -ge "$MAX_ITERATIONS" ]; then
             echo "exceeded=true" >> $GITHUB_OUTPUT
             echo "::error::Max auto-fix iterations ($MAX_ITERATIONS) reached (current: $AUTO_FIX_COUNT)"
-            BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮，review 仍有问题。在 PR 上评论 \`continue-fix\` 可再跑 3 轮自动修复。"
+
+            # Dispatch L2 (capability-resolver) to upgrade L1's capability
+            # L2 will classify the failure, upgrade L1, and retry
+            echo "Dispatching L2 (capability-resolver)..."
+            gh workflow run capability-resolver.yml --repo link-seek/issue-resolver \
+              -f consumer-repo="$GITHUB_REPOSITORY" \
+              -f pr-number="$PR_NUMBER" \
+              -f head-sha="$HEAD_SHA" \
+              -f ci-failures="${{ steps.context.outputs.fix_context }}" \
+              || echo "Failed to dispatch L2 (capability-resolver may not exist yet)"
+
+            BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮仍未通过。已触发 L2 (capability-resolver) 分析能力缺口并升级 L1。"
             gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
               -f body="$BODY"
             exit 1
