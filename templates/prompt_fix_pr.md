@@ -50,3 +50,19 @@ SeaORM 在 SQLite 中将 `Uuid` 类型存为 **16 字节 binary blob**（`X'...'
 4. 在 test helper（如 login()）里确保测试用户有完整的权限设置
 
 开始修复。
+## GraphQL Error → E2E Test Failure 因果链
+当 E2E 测试报 `GraphQL errors detected during test` 时，根因通常在后端 resolver：
+1. 后端 resolver 返回 Error → GraphQL response 包含 errors 字段
+2. 前端 Apollo Client 收到 errors → 抛出异常或数据为空
+3. E2E 断言失败（如 not.toBeVisible、元素不存在等）
+
+修复策略：
+- **不要修前端测试或组件** — 那是症状不是根因
+- **修后端 resolver/mutation** — 让它正确返回数据或处理错误
+- 如果 review-ai 同时报了 blocking issue（如事务违反 Result 契约），
+  那个就是根因，修它就能同时解决 E2E 失败
+
+## Rust 事务安全规则
+当 `save()` 后跟 `audit_log()` 时，如果 audit_log 失败：
+- ❌ 返回 Err（调用方认为操作未生效，但数据已入库）
+- ✅ 用事务/补偿机制，或先写 audit log 再 save，或用 outbox pattern
