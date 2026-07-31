@@ -149,6 +149,13 @@ jobs:
               COMBINED+="\n\n## CI Test Failures (must fix)\n$CI_FAILURES"
             fi
 
+            # Gather PR diff for context (L3 capability upgrade: context-blindness fix)
+            PR_DIFF=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files \
+              --jq '.[] | "### \(.status): \(.path)\n\`\`\`diff\n\(.patch // "binary file")\n\`\`\`"' 2>/dev/null | head -200)
+            if [ -n "$PR_DIFF" ]; then
+              COMBINED+="\n\n## PR Changes (diff)\n$PR_DIFF"
+            fi
+
             echo "fix_context<<CTX_EOF" >> $GITHUB_OUTPUT
             echo -e "$COMBINED" >> $GITHUB_OUTPUT
             echo "CTX_EOF" >> $GITHUB_OUTPUT
