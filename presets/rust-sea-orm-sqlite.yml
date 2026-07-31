@@ -1,0 +1,35 @@
+# Preset: Rust + SeaORM + SQLite
+#
+# Provides capability knowledge for projects using:
+# - Rust backend with SeaORM
+# - SQLite database
+# - Sea-orm-migration for schema management
+#
+# Usage in .issue-resolver.yml:
+#   extends:
+#     - rust-sea-orm-sqlite
+
+fix_config:
+  extra_knowledge: |
+    ## SQLite + SeaORM UUID 规则
+    SeaORM 在 SQLite 中将 Uuid 类型存为 16 字节 binary blob（X'...'），不是字符串。
+    - Migration 用 X'00000000000000000000000000000010' 插入 → 存为 binary
+    - Raw SQL 查询也必须用 X'...' 格式比较：
+      - ❌ WHERE "id" = '00000000-0000-0000-0000-000000000010' （string，36字节，查不到）
+      - ✅ WHERE "id" = X'00000000000000000000000000000010' （binary，16字节，匹配）
+    - 或用 hex() 函数：WHERE hex("id") = '00000000000000000000000000000010'
+    - SeaORM Entity API（Entity::find_by_id(uuid)）自动处理转换，不需要手动处理
+
+    ## SeaORM Migration 测试规则
+    - 测试中插入数据时，UUID 列必须用 X'...' 格式（和 migration 一致）
+    - 不要用 string UUID 插入 binary UUID 列（会导致 FOREIGN KEY constraint failed）
+    - 使用 sea_orm_migration::sea_orm 的 raw SQL 时，注意 DatabaseBackend::Sqlite 的类型映射
+
+  context_sources:
+    - ci-log
+    - pr-diff
+
+tech_stack:
+  - rust
+  - sqlite
+  - sea-orm
