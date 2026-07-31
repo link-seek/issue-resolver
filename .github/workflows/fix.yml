@@ -36,12 +36,7 @@ on:
       llm-model:
         description: 'LLM model'
         required: false
-        default: 'openai/glm-5.2'
-        type: string
-      llm-base-url:
-        description: 'LLM base URL'
-        required: false
-        default: 'https://api.modelarts-maas.com/v2'
+        default: 'glm-5.2'
         type: string
       timeout-minutes:
         description: 'Timeout in minutes'
@@ -50,12 +45,12 @@ on:
         type: number
 
     secrets:
-      LLM_API_KEY:
+      LLM_API_KEY_1:
         required: true
-      LLM_BASE_URL:
-        required: false
-      LLM_MODEL:
-        required: false
+      LLM_API_KEY_2:
+        required: true
+      LLM_API_KEY_3:
+        required: true
       APP_ID:
         required: true
       APP_PRIVATE_KEY:
@@ -224,14 +219,64 @@ jobs:
           git config --global user.name "ai-bot"
           git config --global user.email "bot@ai-resolver.dev"
 
+      - name: Setup LiteLLM proxy
+        if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
+        shell: bash
+        run: |
+          cat > /tmp/litellm_config.yaml << 'EOF'
+          model_list:
+            - model_name: glm-5.2
+              litellm_params:
+                model: openai/glm-5.2
+                api_key: ${{ secrets.LLM_API_KEY_1 }}
+                api_base: https://api.modelarts-maas.com/v2
+            - model_name: glm-5.2
+              litellm_params:
+                model: openai/glm-5.2
+                api_key: ${{ secrets.LLM_API_KEY_2 }}
+                api_base: https://api.modelarts-maas.com/v2
+            - model_name: glm-5.2
+              litellm_params:
+                model: openai/glm-5.2
+                api_key: ${{ secrets.LLM_API_KEY_3 }}
+                api_base: https://api.modelarts-maas.com/v2
+          router_settings:
+            routing_strategy: simple-shuffle
+            num_retries: 3
+            allowed_fails: 3
+            request_timeout: 120
+          general_settings:
+            master_key: sk-litellm-proxy
+            drop_params: true
+          EOF
+
+          docker run -d --name litellm \
+            -p 4000:4000 \
+            -v /tmp/litellm_config.yaml:/app/config.yaml \
+            ghcr.io/berriai/litellm:main-latest \
+            --config /app/config.yaml --port 4000 --host 0.0.0.0
+
+          echo "Waiting for LiteLLM proxy to be ready..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:4000/health > /dev/null 2>&1; then
+              echo "LiteLLM proxy ready (attempt $i)"
+              curl -s http://localhost:4000/health
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::LiteLLM proxy failed to start"
+          docker logs litellm 2>&1 | tail -50
+          exit 1
+
       - name: Run fix (issue mode)
         if: ${{ steps.context.outputs.mode == 'issue' }}
         shell: bash
         working-directory: target-repo
         env:
-          LLM_MODEL: ${{ secrets.LLM_MODEL || inputs.llm-model }}
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: glm-5.2
+          LLM_BASE_URL: http://localhost:4000/v1
+          LLM_API_KEY: sk-litellm-proxy
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           ISSUE_NUMBER: ${{ steps.context.outputs.target_number }}
           REPO_NAME: ${{ github.repository }}
@@ -249,9 +294,9 @@ jobs:
         shell: bash
         working-directory: target-repo
         env:
-          LLM_MODEL: ${{ secrets.LLM_MODEL || inputs.llm-model }}
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: glm-5.2
+          LLM_BASE_URL: http://localhost:4000/v1
+          LLM_API_KEY: sk-litellm-proxy
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
           REPO_NAME: ${{ github.repository }}

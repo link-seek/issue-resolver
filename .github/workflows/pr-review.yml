@@ -31,12 +31,7 @@ on:
       llm-model:
         description: 'LLM model for review'
         required: false
-        default: 'openai/glm-5.2'
-        type: string
-      llm-base-url:
-        description: 'LLM base URL'
-        required: false
-        default: 'https://api.modelarts-maas.com/v2'
+        default: 'glm-5.2'
         type: string
       max-auto-fix-iterations:
         description: 'Max auto-fix iterations'
@@ -59,12 +54,12 @@ on:
         required: true
       APP_PRIVATE_KEY:
         required: true
-      LLM_API_KEY:
+      LLM_API_KEY_1:
         required: true
-      LLM_MODEL:
-        required: false
-      LLM_BASE_URL:
-        required: false
+      LLM_API_KEY_2:
+        required: true
+      LLM_API_KEY_3:
+        required: true
 
 permissions:
   contents: read
@@ -194,19 +189,68 @@ jobs:
       - name: Resolve LLM config
         id: llm
         env:
-          RAW_MODEL: ${{ secrets.LLM_MODEL || inputs.llm-model }}
+          RAW_MODEL: ${{ inputs.llm-model }}
         run: |
           MODEL="${RAW_MODEL#openai/}"
           MODEL="${MODEL#anthropic/}"
           echo "model=$MODEL" >> "$GITHUB_OUTPUT"
           echo "Resolved model: $MODEL"
 
+      - name: Setup LiteLLM proxy
+        shell: bash
+        run: |
+          cat > /tmp/litellm_config.yaml << 'EOF'
+          model_list:
+            - model_name: glm-5.2
+              litellm_params:
+                model: openai/glm-5.2
+                api_key: ${{ secrets.LLM_API_KEY_1 }}
+                api_base: https://api.modelarts-maas.com/v2
+            - model_name: glm-5.2
+              litellm_params:
+                model: openai/glm-5.2
+                api_key: ${{ secrets.LLM_API_KEY_2 }}
+                api_base: https://api.modelarts-maas.com/v2
+            - model_name: glm-5.2
+              litellm_params:
+                model: openai/glm-5.2
+                api_key: ${{ secrets.LLM_API_KEY_3 }}
+                api_base: https://api.modelarts-maas.com/v2
+          router_settings:
+            routing_strategy: simple-shuffle
+            num_retries: 3
+            allowed_fails: 3
+            request_timeout: 120
+          general_settings:
+            master_key: sk-litellm-proxy
+            drop_params: true
+          EOF
+
+          docker run -d --name litellm \
+            -p 4000:4000 \
+            -v /tmp/litellm_config.yaml:/app/config.yaml \
+            ghcr.io/berriai/litellm:main-latest \
+            --config /app/config.yaml --port 4000 --host 0.0.0.0
+
+          echo "Waiting for LiteLLM proxy to be ready..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:4000/health > /dev/null 2>&1; then
+              echo "LiteLLM proxy ready (attempt $i)"
+              curl -s http://localhost:4000/health
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::LiteLLM proxy failed to start"
+          docker logs litellm 2>&1 | tail -50
+          exit 1
+
       - name: Run Open Code Review
         id: ocr
         uses: alibaba/open-code-review@v1.8.0
         with:
-          llm_url: ${{ secrets.LLM_BASE_URL || inputs.llm-base-url }}
-          llm_auth_token: ${{ secrets.LLM_API_KEY }}
+          llm_url: http://localhost:4000/v1
+          llm_auth_token: sk-litellm-proxy
           llm_model: ${{ steps.llm.outputs.model }}
           llm_use_anthropic: 'false'
           language: '中文'
