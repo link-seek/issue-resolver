@@ -60,7 +60,7 @@ jobs:
       - name: Gather CI failure details
         id: gather
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           CONSUMER_REPO: ${{ inputs.consumer-repo }}
           PR_NUMBER: ${{ inputs.pr-number }}
           HEAD_SHA: ${{ inputs.head-sha }}
@@ -160,7 +160,7 @@ jobs:
           repository: link-seek/issue-resolver
           ref: main
           path: issue-resolver
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
 
       - uses: actions/setup-python@v5
         with:
@@ -302,7 +302,7 @@ jobs:
 
       - name: Dispatch auto-fix retry
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           CONSUMER_REPO: ${{ inputs.consumer-repo }}
           PR_NUMBER: ${{ inputs.pr-number }}
         run: |
@@ -324,6 +324,7 @@ jobs:
           echo "Max iterations for L1: $MAX_ITERATIONS"
 
           # Dispatch on-comment-fix workflow with correct budget
+          # Use PAT_TOKEN for cross-repo workflow dispatch (App token lacks actions:write on consumer repo)
           gh workflow run on-comment-fix.yml --repo $CONSUMER_REPO \
             -f pr_number=$PR_NUMBER \
             -f head_branch=$HEAD_BRANCH \
