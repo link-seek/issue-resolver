@@ -350,7 +350,8 @@ jobs:
             GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
               -f pr_number="$PR_NUMBER" \
               -f head_branch="$HEAD_BRANCH" \
-              -f head_sha="$HEAD_SHA" || echo "Failed to dispatch auto-fix"
+              -f head_sha="$HEAD_SHA" \
+              -f max_iterations="${{ inputs.max-auto-fix-iterations }}" || echo "Failed to dispatch auto-fix"
             # OCR blocking makes the job fail; CI-only failures don't block the job
             if [ "$OCR_BLOCKING" -gt 0 ]; then
               echo "::error::OCR review found $OCR_BLOCKING blocking issues"
