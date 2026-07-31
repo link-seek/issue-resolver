@@ -90,8 +90,8 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="sqlite-uuid-blindness",
-        match_keywords=["FOREIGN KEY constraint failed", "row must exist"],
-        match_all=True,
+        match_keywords=["FOREIGN KEY constraint failed", "row must exist", "SqliteError"],
+        match_all=False,  # any one of these is specific enough for SQLite issues
         diagnosis=(
             "L1 doesn't know that SeaORM stores UUIDs as 16-byte binary blobs "
             "in SQLite. Raw SQL queries using string UUIDs can't match binary blobs."
@@ -110,7 +110,7 @@ SeaORM 在 SQLite 中将 Uuid 类型存为 16 字节 binary blob（X'...'），�
     Pattern(
         name="e2e-context-blindness",
         match_keywords=["not.toBeVisible", "加载"],
-        match_all=True,
+        match_all=False,  # either keyword indicates E2E context issue
         diagnosis=(
             "L1 only sees CI failure logs but not what the PR changed. "
             "When business logic changes cause E2E test failures, L1 can't "
@@ -127,6 +127,39 @@ if [ -n "$PR_DIFF" ]; then
 fi""",
         tech_stack=None,  # universal
         confidence=0.85,
+    ),
+    Pattern(
+        name="graphql-e2e-cascade",
+        match_keywords=["GraphQL errors detected during test", "not.toBeVisible"],
+        match_all=False,  # either symptom indicates the cascade
+        diagnosis=(
+            "L1 doesn't understand the causal chain: backend bug → GraphQL error "
+            "→ E2E test failure. When review-ai finds a backend issue (e.g., "
+            "transactional violation in space_service.rs) and E2E tests fail with "
+            "GraphQL errors, L1 treats them as separate problems instead of "
+            "fixing the root cause (backend) to resolve the symptom (E2E)."
+        ),
+        fix_type="knowledge-append",
+        fix_target="templates/prompt_fix_pr.md",
+        fix_action="append GraphQL→E2E cascade knowledge to the prompt template",
+        fix_content="""## GraphQL Error → E2E Test Failure 因果链
+当 E2E 测试报 `GraphQL errors detected during test` 时，根因通常在后端 resolver：
+1. 后端 resolver 返回 Error → GraphQL response 包含 errors 字段
+2. 前端 Apollo Client 收到 errors → 抛出异常或数据为空
+3. E2E 断言失败（如 not.toBeVisible、元素不存在等）
+
+修复策略：
+- **不要修前端测试或组件** — 那是症状不是根因
+- **修后端 resolver/mutation** — 让它正确返回数据或处理错误
+- 如果 review-ai 同时报了 blocking issue（如事务违反 Result 契约），
+  那个就是根因，修它就能同时解决 E2E 失败
+
+## Rust 事务安全规则
+当 `save()` 后跟 `audit_log()` 时，如果 audit_log 失败：
+- ❌ 返回 Err（调用方认为操作未生效，但数据已入库）
+- ✅ 用事务/补偿机制，或先写 audit log 再 save，或用 outbox pattern""",
+        tech_stack=None,  # universal
+        confidence=0.88,
     ),
     Pattern(
         name="config-validation-too-strict",
