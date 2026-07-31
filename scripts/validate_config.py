@@ -5,8 +5,12 @@ Verifies:
 1. All required config fields exist (reuses DEFAULT_CONFIG from fix_issue.py)
 2. pipeline_test + deploy sections present (needed for pipeline tests)
 3. test.command references valid build files (Cargo.toml / package.json)
-4. .github/workflows/issue-resolver.yml exists
-5. Workflow with params match .issue-resolver.yml trigger config
+4. At least one workflow calls issue-resolver reusable workflows (flexible, not hardcoded filename)
+5. Trigger config consistency (if a dedicated issue-resolver.yml exists, check its params)
+
+Design principle: The contract is .issue-resolver.yml (what the consumer declares).
+The flow repo should NOT reach into the consumer's file structure beyond checking
+that the consumer has wired up the reusable workflows somehow.
 
 Usage:
     python validate_config.py    # run from consumer repo root
@@ -87,14 +91,44 @@ def validate_test_command(config: dict) -> list[str]:
 
 
 def validate_workflow_file() -> list[str]:
+    """Check that at least one workflow in .github/workflows/ calls issue-resolver.
+
+    Instead of requiring a specific filename (issue-resolver.yml), we check that
+    ANY workflow file references the issue-resolver repo's reusable workflows.
+    This follows the override-first pattern: the consumer can wire up the
+    workflows however they want, as long as they're connected.
+    """
     errors = []
-    workflow_path = Path(".github/workflows/issue-resolver.yml")
-    if not workflow_path.exists():
-        errors.append("Missing .github/workflows/issue-resolver.yml")
+    workflow_dir = Path(".github/workflows")
+    if not workflow_dir.exists():
+        errors.append("Missing .github/workflows/ directory")
+        return errors
+
+    # Check if any workflow file references issue-resolver reusable workflows
+    resolver_ref = "issue-resolver/.github/workflows"
+    has_resolver = False
+    for wf_file in workflow_dir.glob("*.yml"):
+        content = wf_file.read_text()
+        if resolver_ref in content:
+            has_resolver = True
+            break
+
+    if not has_resolver:
+        errors.append(
+            "No workflow calls issue-resolver reusable workflows. "
+            "Add a 'uses: link-seek/issue-resolver/.github/workflows/...' step "
+            "to one of your workflow files."
+        )
     return errors
 
 
 def validate_workflow_consistency(config: dict) -> list[str]:
+    """Check trigger config consistency if a dedicated issue-resolver.yml exists.
+
+    If the consumer has a .github/workflows/issue-resolver.yml, verify its
+    trigger params match .issue-resolver.yml. If they don't have this specific
+    file, that's fine — they might be using a different filename.
+    """
     errors = []
     workflow_path = Path(".github/workflows/issue-resolver.yml")
     if not workflow_path.exists():
