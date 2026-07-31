@@ -182,6 +182,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
           MAX_ITERATIONS: ${{ steps.context.outputs.max_iterations }}
+          FIX_CONTEXT: ${{ steps.context.outputs.fix_context }}
         run: |
           AUTO_FIX_COUNT=$(git log --oneline --grep="^auto-fix:" | wc -l | tr -d ' ')
           echo "auto_fix_count=$AUTO_FIX_COUNT" >> $GITHUB_OUTPUT
@@ -198,7 +199,7 @@ jobs:
               -f consumer-repo="$GITHUB_REPOSITORY" \
               -f pr-number="$PR_NUMBER" \
               -f head-sha="$HEAD_SHA" \
-              -f ci-failures="${{ steps.context.outputs.fix_context }}" \
+              -f ci-failures="$FIX_CONTEXT" \
               || echo "Failed to dispatch L2 (capability-resolver may not exist yet)"
 
             BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮仍未通过。已触发 L2 (capability-resolver) 分析能力缺口并升级 L1。"
