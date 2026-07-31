@@ -221,15 +221,16 @@ jobs:
 
       - name: Commit and push upgrades
         working-directory: issue-resolver
+        env:
+          GAPS_JSON: ${{ needs.classify.outputs.gaps }}
         run: |
           git config user.name "l2-capability-resolver"
           git config user.email "l2@capability-resolver.dev"
           git diff --quiet && echo "No changes to commit" && exit 0
           git add -A
-          git commit -m "L2: upgrade L1 capability based on pattern matching
-
-          Applied by capability-resolver.yml (L2)
-          Patterns: ${{ needs.classify.outputs.gaps }}"
+          git commit -m "L2: upgrade L1 capability based on pattern matching" \
+            -m "Applied by capability-resolver.yml (L2)" \
+            -m "Patterns: $GAPS_JSON"
           git push
 
       - name: Validate upgrades (run issue-resolver CI)
