@@ -311,11 +311,23 @@ jobs:
           HEAD_BRANCH=$(echo "$PR_INFO" | jq -r '.head_branch')
           HEAD_SHA=$(echo "$PR_INFO" | jq -r '.head_sha')
 
-          # Dispatch on-comment-fix workflow
+          # Count existing auto-fix commits on the PR branch
+          # L1 counts commits starting with "auto-fix:" — we need to give it
+          # a budget ABOVE the current count so it has fresh iterations to work with
+          AUTO_FIX_COUNT=$(gh api "repos/$CONSUMER_REPO/commits?sha=$HEAD_BRANCH&per_page=100" \
+            --jq '[.[] | select(.commit.message | startswith("auto-fix:"))] | length' 2>/dev/null || echo "0")
+          RETRY_BUDGET=3
+          MAX_ITERATIONS=$((AUTO_FIX_COUNT + RETRY_BUDGET))
+
+          echo "Existing auto-fix commits: $AUTO_FIX_COUNT"
+          echo "Retry budget: +$RETRY_BUDGET"
+          echo "Max iterations for L1: $MAX_ITERATIONS"
+
+          # Dispatch on-comment-fix workflow with correct budget
           gh workflow run on-comment-fix.yml --repo $CONSUMER_REPO \
             -f pr_number=$PR_NUMBER \
             -f head_branch=$HEAD_BRANCH \
             -f head_sha=$HEAD_SHA \
-            -f max_iterations=3
+            -f max_iterations=$MAX_ITERATIONS
 
-          echo "Dispatched L1 retry for PR #$PR_NUMBER with upgraded capability"
+          echo "Dispatched L1 retry for PR #$PR_NUMBER with upgraded capability (max_iterations=$MAX_ITERATIONS)"
