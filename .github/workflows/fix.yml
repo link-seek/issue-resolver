@@ -258,9 +258,9 @@ jobs:
 
           echo "Waiting for LiteLLM proxy to be ready..."
           for i in $(seq 1 60); do
-            if curl -sf http://localhost:4000/health > /dev/null 2>&1; then
+            if curl -sf -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health > /dev/null 2>&1; then
               echo "LiteLLM proxy ready (attempt $i)"
-              curl -s http://localhost:4000/health
+              curl -s -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health
               exit 0
             fi
             sleep 2
