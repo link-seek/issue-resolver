@@ -90,7 +90,6 @@ jobs:
       - name: Get PR info and dispatch auto-fix
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          DISPATCH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
           AUTO_FIX_WORKFLOW: ${{ inputs.auto-fix-workflow }}
         run: |
@@ -102,7 +101,7 @@ jobs:
           echo "Dispatching auto-fix for PR #$PR_NUMBER (branch: $HEAD_BRANCH)"
           echo "max_iterations=20 (10 original + 10 continue)"
 
-          GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
+          gh workflow run "$AUTO_FIX_WORKFLOW" \
             -f pr_number="$PR_NUMBER" \
             -f head_branch="$HEAD_BRANCH" \
             -f head_sha="$HEAD_SHA" \
@@ -263,7 +262,6 @@ jobs:
         id: verdict
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          DISPATCH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -343,7 +341,7 @@ jobs:
           if [ "$OCR_BLOCKING" -gt 0 ] || [ "$CI_FAILED" -gt 0 ]; then
             echo "::warning::Found $OCR_BLOCKING OCR blocking + $CI_FAILED CI failures"
             echo "Dispatching auto-fix with full context (review + CI)..."
-            GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
+            gh workflow run "$AUTO_FIX_WORKFLOW" \
               -f pr_number="$PR_NUMBER" \
               -f head_branch="$HEAD_BRANCH" \
               -f head_sha="$HEAD_SHA" || echo "Failed to dispatch auto-fix"
