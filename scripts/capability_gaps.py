@@ -104,7 +104,7 @@ SeaORM 在 SQLite 中将 Uuid 类型存为 16 字节 binary blob（X'...'），�
 - ❌ WHERE "id" = '00000000-0000-0000-0000-000000000010' （string，查不到）
 - ✅ WHERE "id" = X'00000000000000000000000000000010' （binary，匹配）
 - 或用 hex() 函数：WHERE hex("id") = '00000000000000000000000000000010'""",
-        tech_stack="sqlite",  # only for SQLite-using projects
+        tech_stack=None,  # universal - "FOREIGN KEY constraint" is specific enough
         confidence=0.90,
     ),
     Pattern(
