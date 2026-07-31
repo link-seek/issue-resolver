@@ -184,6 +184,12 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+          permissions: >-
+            contents: write,
+            pull-requests: write,
+            issues: write,
+            actions: write,
+            checks: read
 
       - name: Resolve LLM config
         id: llm
