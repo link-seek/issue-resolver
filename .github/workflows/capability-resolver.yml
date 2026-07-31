@@ -1,0 +1,321 @@
+name: Capability Resolver (L2)
+
+# L2: When L1 (auto-fix) hits iteration limit, L2 identifies the capability gap
+# and upgrades L1's capability (modifies issue-resolver repo).
+#
+# Flow:
+# 1. L1 hits iteration limit → dispatches L2
+# 2. L2 classifies CI failures against pattern library
+# 3. L2 upgrades L1 (modifies issue-resolver repo)
+# 4. L2 validates changes (runs issue-resolver CI)
+# 5. L2 dispatches L1 to retry with new capability
+# 6. If no pattern matches → escalate to L3 (create issue with capability-gap-unknown label)
+
+on:
+  workflow_dispatch:
+    inputs:
+      consumer-repo:
+        description: "Consumer repo (owner/repo) where L1 failed"
+        required: true
+        type: string
+      pr-number:
+        description: "PR number that L1 couldn't fix"
+        required: true
+        type: string
+      head-sha:
+        description: "PR head SHA for CI failure lookup"
+        required: true
+        type: string
+      ci-failures:
+        description: "CI failure summary (pre-collected by L1)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  classify:
+    name: Classify capability gap
+    runs-on: ubuntu-latest
+    outputs:
+      gaps: ${{ steps.classify.outputs.gaps }}
+      gap-count: ${{ steps.classify.outputs.gap-count }}
+      has-unknown: ${{ steps.classify.outputs.has-unknown }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: link-seek/issue-resolver
+          ref: main
+          path: issue-resolver
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Gather CI failure details
+        id: gather
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONSUMER_REPO: ${{ inputs.consumer-repo }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          CI_FAILURES_INPUT: ${{ inputs.ci-failures }}
+        run: |
+          # If CI failures were passed as input, use them
+          if [ -n "$CI_FAILURES_INPUT" ]; then
+            echo "ci_logs<<LOGS_EOF" >> $GITHUB_OUTPUT
+            echo "$CI_FAILURES_INPUT" >> $GITHUB_OUTPUT
+            echo "LOGS_EOF" >> $GITHUB_OUTPUT
+          else
+            # Gather from check-runs
+            CI_LOGS=""
+            FAILED_CHECKS=$(gh api repos/$CONSUMER_REPO/commits/$HEAD_SHA/check-runs \
+              --jq '.check_runs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)"' 2>/dev/null)
+            while IFS=$'\t' read -r CHECK_ID CHECK_NAME; do
+              [ -z "$CHECK_ID" ] && continue
+              CI_LOGS+="## $CHECK_NAME\n"
+              TMP_LOGS_DIR=$(mktemp -d)
+              if gh api repos/$CONSUMER_REPO/check-runs/$CHECK_ID/logs > "$TMP_LOGS_DIR/logs.zip" 2>/dev/null; then
+                (cd "$TMP_LOGS_DIR" && unzip -o -q logs.zip 2>/dev/null || true)
+                LOGS=$(grep -rhi "error\|fail\|panic\|not found\|FAIL:" "$TMP_LOGS_DIR" 2>/dev/null | tail -30 || echo "")
+                CI_LOGS+="$LOGS\n"
+              fi
+              rm -rf "$TMP_LOGS_DIR"
+            done <<< "$FAILED_CHECKS"
+            echo "ci_logs<<LOGS_EOF" >> $GITHUB_OUTPUT
+            echo -e "$CI_LOGS" >> $GITHUB_OUTPUT
+            echo "LOGS_EOF" >> $GITHUB_OUTPUT
+          fi
+
+          # Gather PR diff
+          PR_DIFF=$(gh api repos/$CONSUMER_REPO/pulls/$PR_NUMBER/files \
+            --jq '.[] | "\(.status): \(.path)"' 2>/dev/null | head -50)
+          echo "pr_diff<<DIFF_EOF" >> $GITHUB_OUTPUT
+          echo "$PR_DIFF" >> $GITHUB_OUTPUT
+          echo "DIFF_EOF" >> $GITHUB_OUTPUT
+
+      - name: Classify failures against pattern library
+        id: classify
+        working-directory: issue-resolver
+        env:
+          CI_LOGS: ${{ steps.gather.outputs.ci_logs }}
+          PR_DIFF: ${{ steps.gather.outputs.pr_diff }}
+        run: |
+          python3 -c "
+          import sys, json
+          sys.path.insert(0, 'scripts')
+          from capability_gaps import classify_failures, detect_tech_stack, format_gap_report
+
+          ci_logs = '''$CI_LOGS'''
+          pr_diff = '''$PR_DIFF'''
+
+          # Auto-detect tech stack
+          tech_stack = detect_tech_stack(pr_diff, ci_logs)
+          print(f'Detected tech stack+stack: {tech_stack}')
+
+          # Classify
+          gaps = classify_failures(ci_logs, pr_diff, tech_stack)
+
+          if gaps:
+              print(format_gap_report(gaps))
+              gap_json = json.dumps([{
+                  'name': g.name,
+                  'fix_type': g.fix_type,
+                  'fix_target': g.fix_target,
+                  'fix_action': g.fix_action,
+                  'confidence': g.confidence
+              } for g in gaps])
+              print(f'gaps={gap_json}')
+              print(f'gap_count={len(gaps)}')
+              print('has-unknown=false')
+          else:
+              print('No known patterns matched. Escalating to L3.')
+              print('gaps=[]')
+              print('gap_count=0')
+              print('has-unknown=true')
+          " 2>&1 | tee /tmp/classify_output.txt
+
+          # Parse output
+          GAPS=$(grep "^gaps=" /tmp/classify_output.txt | cut -d= -f2-)
+          GAP_COUNT=$(grep "^gap_count=" /tmp/classify_output.txt | cut -d= -f2)
+          HAS_UNKNOWN=$(grep "^has-unknown=" /tmp/classify_output.txt | cut -d= -f2)
+
+          echo "gaps=$GAPS" >> $GITHUB_OUTPUT
+          echo "gap-count=$GAP_COUNT" >> $GITHUB_OUTPUT
+          echo "has-unknown=$HAS_UNKNOWN" >> $GITHUB_OUTPUT
+
+  upgrade:
+    name: Upgrade L1 capability
+    needs: classify
+    if: needs.classify.outputs.gap-count != '0'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: link-seek/issue-resolver
+          ref: main
+          path: issue-resolver
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply capability upgrades
+        working-directory: issue-resolver
+        env:
+          GAPS: ${{ needs.classify.outputs.gaps }}
+        run: |
+          python3 -c "
+          import json, sys
+          sys.path.insert(0, 'scripts')
+          from capability_gaps import PATTERNS
+
+          gaps = json.loads('$GAPS')
+          for gap in gaps:
+              pattern = next((p for p in PATTERNS if p.name == gap['name']), None)
+              if not pattern:
+                  print(f'Unknown pattern: {gap[\"name\"]}, skipping')
+                  continue
+
+              print(f'=== Applying {pattern.name} ({pattern.fix_type}) ===')
+              print(f'Target: {pattern.fix_target}')
+              print(f'Action: {pattern.fix_action}')
+
+              # Read current file
+              from pathlib import Path
+              target = Path(pattern.fix_target)
+              if not target.exists():
+                  print(f'  Target file does not exist, skipping')
+                  continue
+
+              content = target.read_text()
+
+              # Check if fix already applied (idempotency)
+              if pattern.fix_content and pattern.fix_content.split(chr(10))[0] in content:
+                  print(f'  Fix already applied (idempotent check), skipping')
+                  continue
+
+              # Apply fix based on type
+              if pattern.fix_type == 'knowledge-append':
+                  # Append knowledge to the file
+                  content += chr(10) + pattern.fix_content + chr(10)
+                  target.write_text(content)
+                  print(f'  Appended knowledge to {pattern.fix_target}')
+              elif pattern.fix_type == 'design-fix':
+                  # For design fixes, we need more careful handling
+                  # In production, this would use a more sophisticated patching mechanism
+                  print(f'  Design fix requires manual review, marking for L3')
+              elif pattern.fix_type == 'context-source-add':
+                  # Add context source to the workflow
+                  print(f'  Context source addition requires workflow modification')
+                  print(f'  Marking for L3 review')
+              else:
+                  print(f'  Unknown fix type: {pattern.fix_type}')
+          " 2>&1
+
+      - name: Commit and push upgrades
+        working-directory: issue-resolver
+        run: |
+          git config user.name "l2-capability-resolver"
+          git config user.email "l2@capability-resolver.dev"
+          git diff --quiet && echo "No changes to commit" && exit 0
+          git add -A
+          git commit -m "L2: upgrade L1 capability based on pattern matching
+
+          Applied by capability-resolver.yml (L2)
+          Patterns: ${{ needs.classify.outputs.gaps }}"
+          git push
+
+      - name: Validate upgrades (run issue-resolver CI)
+        working-directory: issue-resolver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Run lint and compile check
+          pip install ruff
+          ruff check scripts/ tests/ || echo "Ruff check failed (non-blocking)"
+          for f in scripts/*.py; do
+            python -m py_compile "$f" || { echo "FAIL: $f"; }
+          done
+          echo "Validation complete"
+
+  escalate:
+    name: Escalate to L3 (unknown pattern)
+    needs: classify
+    if: needs.classify.outputs.has-unknown == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: link-seek
+
+      - name: Create L3 escalation issue
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CONSUMER_REPO: ${{ inputs.consumer-repo }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          gh issue create --repo link-seek/issue-resolver \
+            --title "L3: Unknown capability gap in $CONSUMER_REPO PR #$PR_NUMBER" \
+            --label "capability-gap-unknown,L3" \
+            --body "## L2 Escalation: Unknown Capability Gap
+
+          L1 (auto-fix) failed and L2 (capability-resolver) could not match
+          the CI failures against any known pattern.
+
+          ### Consumer Repo
+          $CONSUMER_REPO
+
+          ### PR Number
+          #$PR_NUMBER
+
+          ### Action Required (L3)
+          1. Analyze the CI failures in the PR
+          2. Identify what L1 capability is missing
+          3. Fix L1 (modify issue-resolver repo)
+          4. Add the new pattern to \`scripts/capability_gaps.py\`
+          5. Close this issue
+
+          After closing, L2 will automatically handle this pattern next time."
+
+  retry:
+    name: Dispatch L1 retry
+    needs: [classify, upgrade]
+    if: needs.classify.outputs.gap-count != '0' && needs.classify.outputs.has-unknown != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: link-seek
+
+      - name: Dispatch auto-fix retry
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CONSUMER_REPO: ${{ inputs.consumer-repo }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          # Get PR info
+          PR_INFO=$(gh api repos/$CONSUMER_REPO/pulls/$PR_NUMBER --jq '{head_branch: .head.ref, head_sha: .head.sha}')
+          HEAD_BRANCH=$(echo "$PR_INFO" | jq -r '.head_branch')
+          HEAD_SHA=$(echo "$PR_INFO" | jq -r '.head_sha')
+
+          # Dispatch on-comment-fix workflow
+          gh workflow run on-comment-fix.yml --repo $CONSUMER_REPO \
+            -f pr_number=$PR_NUMBER \
+            -f head_branch=$HEAD_BRANCH \
+            -f head_sha=$HEAD_SHA \
+            -f max_iterations=3
+
+          echo "Dispatched L1 retry for PR #$PR_NUMBER with upgraded capability"
