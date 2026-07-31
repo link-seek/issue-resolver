@@ -317,16 +317,16 @@ jobs:
           OCR_BLOCKING=$(echo "$VERDICT" | grep '^BLOCKING=' | cut -d= -f2)
           OCR_MEDIUM=$(echo "$VERDICT" | grep '^MEDIUM=' | cut -d= -f2)
 
-          # --- 2. Get current workflow run job IDs (to exclude self) ---
-          MY_JOB_IDS=$(gh api repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs \
-            --jq '.jobs[].id' 2>/dev/null | paste -sd, -)
-          echo "Excluding job IDs from current workflow run: $MY_JOB_IDS"
+          # --- 2. Get current workflow run's check-run IDs (to exclude self) ---
+          MY_CHECK_IDS=$(gh api repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs \
+            --jq '[.jobs[].id] | map(tostring) | join(",")' 2>/dev/null || echo "")
+          echo "Excluding job IDs from current workflow run: $MY_CHECK_IDS"
 
           # --- 3. Wait for all other check-runs to complete ---
           echo "Waiting for all other gates to complete..."
           for i in $(seq 1 60); do
             PENDING=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
-              --jq "[.check_runs[] | select(.id | IN(${MY_JOB_IDS:-0}) | not) and .status != \"completed\"] | length" 2>/dev/null || echo "0")
+              --jq "[.check_runs[] | select(.name | startswith(\"pr-review\")) | not) and .status != \"completed\"] | length" 2>/dev/null || echo "0")
             if [ "$PENDING" -eq 0 ]; then
               echo "All gates completed (waited $((i*10))s)"
               break
@@ -337,7 +337,7 @@ jobs:
 
           # --- 4. Collect CI failures ---
           CI_FAILED=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
-            --jq "[.check_runs[] | select(.id | IN(${MY_JOB_IDS:-0}) | not) and .conclusion == \"failure\"] | length" 2>/dev/null || echo "0")
+            --jq "[.check_runs[] | select(.name | startswith(\"pr-review\")) | not) and .conclusion == \"failure\"] | length" 2>/dev/null || echo "0")
 
           echo "OCR blocking: $OCR_BLOCKING"
           echo "OCR medium: $OCR_MEDIUM"
