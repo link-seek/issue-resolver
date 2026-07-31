@@ -20,5 +20,6 @@ def get_template(name: str, **kwargs: object) -> str:
     path = _TEMPLATES_DIR / f"{name}.md"
     content = path.read_text(encoding="utf-8").strip()
     if kwargs:
-        content = content.format(**kwargs)
+        for key, value in kwargs.items():
+            content = content.replace(f"{{{key}}}", str(value))
     return content
