@@ -86,6 +86,23 @@ def mark_discussion_answer(token: str, comment_node_id: str):
     return gh_graphql(token, query, {"id": comment_node_id})
 
 
+def close_discussion_resolved(token: str, discussion_node_id: str):
+    query = """
+    mutation($input: CloseDiscussionInput!) {
+      closeDiscussion(input: $input) {
+        discussion { id }
+      }
+    }
+    """
+    variables = {
+        "input": {
+            "discussionId": discussion_node_id,
+            "reason": "RESOLVED"
+        }
+    }
+    return gh_graphql(token, query, variables)
+
+
 def create_issue(token: str, repo: str, title: str, body: str, labels: list) -> dict:
     return gh_rest(token, "POST", f"/repos/{repo}/issues", {
         "title": title,
@@ -364,6 +381,12 @@ def main():
                 print("Reply posted to discussion")
             except Exception as e:
                 print(f"Failed to post reply: {e}")
+
+            try:
+                close_discussion_resolved(token, discussion_node_id)
+                print("Discussion closed as RESOLVED")
+            except Exception as e:
+                print(f"Failed to close discussion: {e}")
         except Exception as e:
             print(f"Failed to create issue: {e}")
             error_reply = f"## Issue 创建失败\n\n错误: {e}\n\n---\n🤖 由 GLM-5.2 生成"
