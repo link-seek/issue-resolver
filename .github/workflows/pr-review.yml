@@ -267,6 +267,7 @@ jobs:
         id: verdict
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DISPATCH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
@@ -346,7 +347,7 @@ jobs:
           if [ "$OCR_BLOCKING" -gt 0 ] || [ "$CI_FAILED" -gt 0 ]; then
             echo "::warning::Found $OCR_BLOCKING OCR blocking + $CI_FAILED CI failures"
             echo "Dispatching auto-fix with full context (review + CI)..."
-            gh workflow run "$AUTO_FIX_WORKFLOW" \
+            GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
               -f pr_number="$PR_NUMBER" \
               -f head_branch="$HEAD_BRANCH" \
               -f head_sha="$HEAD_SHA" || echo "Failed to dispatch auto-fix"
