@@ -201,17 +201,17 @@ jobs:
         run: |
           cat > /tmp/litellm_config.yaml << 'EOF'
           model_list:
-            - model_name: openai/glm-5.2
+            - model_name: glm-5.2
               litellm_params:
                 model: openai/glm-5.2
                 api_key: ${{ secrets.LLM_API_KEY_1 }}
                 api_base: https://api.modelarts-maas.com/v2
-            - model_name: openai/glm-5.2
+            - model_name: glm-5.2
               litellm_params:
                 model: openai/glm-5.2
                 api_key: ${{ secrets.LLM_API_KEY_2 }}
                 api_base: https://api.modelarts-maas.com/v2
-            - model_name: openai/glm-5.2
+            - model_name: glm-5.2
               litellm_params:
                 model: openai/glm-5.2
                 api_key: ${{ secrets.LLM_API_KEY_3 }}
