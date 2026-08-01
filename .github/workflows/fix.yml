@@ -332,6 +332,21 @@ jobs:
           uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml \
             python ../issue-resolver-scripts/scripts/fix_pr.py
 
+      - name: Guard: reject workflow file changes (L1 hard limit)
+        if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
+        working-directory: target-repo
+        run: |
+          # L1 硬限制：不能修改消费仓的 .github/workflows/（薄壳）
+          WORKFLOW_CHANGES=$(git diff --name-only HEAD 2>/dev/null | grep '^\.github/workflows/' || true)
+          if [ -n "$WORKFLOW_CHANGES" ]; then
+            echo "::warning::L1 attempted to modify .github/workflows/ (forbidden by architecture):"
+            echo "$WORKFLOW_CHANGES"
+            git checkout -- .github/workflows/ 2>/dev/null || true
+            echo "Reverted workflow file changes (L1 cannot modify thin shell)"
+          else
+            echo "Guard passed: no workflow file changes detected"
+          fi
+
       - name: Approve pending CI workflows (PR mode)
         if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
         env:

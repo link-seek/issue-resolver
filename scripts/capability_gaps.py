@@ -177,6 +177,30 @@ fi""",
         tech_stack=None,
         confidence=0.70,
     ),
+    Pattern(
+        name="empty-loop-iteration",
+        match_keywords=["Max auto-fix iterations", "Fix already applied"],
+        match_all=True,
+        diagnosis=(
+            "L1 hits iteration limit, L2 upgrades L1 (idempotent), L2 retries L1, "
+            "but review-ai re-triggers L1 with default max_iterations=10. "
+            "Since the PR already has 10+ auto-fix commits, L1 immediately hits "
+            "the limit again, creating an empty loop. "
+            "Fix: change L1's iteration count from all-time to a sliding window "
+            "(only count auto-fix commits in the last 15 commits). "
+            "This way L1 gets fresh iterations after each L2 upgrade."
+        ),
+        fix_type="design-fix",
+        fix_target=".github/workflows/fix.yml",
+        fix_action="change iteration count from all-time to sliding window of 15 commits",
+        fix_content=(
+            'git log --oneline --grep="^auto-fix:" | wc -l | tr -d \' \''
+            '>>>'
+            'git log --oneline -15 | grep "auto-fix:" | wc -l | tr -d \' \''
+        ),
+        tech_stack=None,
+        confidence=0.92,
+    ),
 ]
 
 

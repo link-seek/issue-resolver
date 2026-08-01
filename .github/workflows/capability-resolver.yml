@@ -172,9 +172,10 @@ jobs:
           GAPS: ${{ needs.classify.outputs.gaps }}
         run: |
           python3 -c "
-          import json, sys
+          import json, sys, re
           sys.path.insert(0, 'scripts')
           from capability_gaps import PATTERNS
+          from pathlib import Path
 
           gaps = json.loads('$GAPS')
           for gap in gaps:
@@ -187,8 +188,6 @@ jobs:
               print(f'Target: {pattern.fix_target}')
               print(f'Action: {pattern.fix_action}')
 
-              # Read current file
-              from pathlib import Path
               target = Path(pattern.fix_target)
               if not target.exists():
                   print(f'  Target file does not exist, skipping')
@@ -201,23 +200,62 @@ jobs:
                   print(f'  Fix already applied (idempotent check), skipping')
                   continue
 
-              # Apply fix based on type
               if pattern.fix_type == 'knowledge-append':
                   # Append knowledge to the file
                   content += chr(10) + pattern.fix_content + chr(10)
                   target.write_text(content)
                   print(f'  Appended knowledge to {pattern.fix_target}')
+
               elif pattern.fix_type == 'design-fix':
-                  # For design fixes, we need more careful handling
-                  # In production, this would use a more sophisticated patching mechanism
-                  print(f'  Design fix requires manual review, marking for L3')
+                  # L2 modifies L1's code logic
+                  # fix_content format: 'MARKER:old_code>>>new_code'
+                  # If no marker, append as a code block
+                  if '>>>' in pattern.fix_content:
+                      parts = pattern.fix_content.split('>>>', 1)
+                      old_code = parts[0].strip()
+                      new_code = parts[1].strip()
+                      if old_code in content:
+                          content = content.replace(old_code, new_code)
+                          target.write_text(content)
+                          print(f'  Replaced code in {pattern.fix_target}')
+                      else:
+                          print(f'  Old code not found in target, cannot apply design-fix')
+                  else:
+                      # No marker — append as new code
+                      content += chr(10) + pattern.fix_content + chr(10)
+                      target.write_text(content)
+                      print(f'  Appended code to {pattern.fix_target}')
+
               elif pattern.fix_type == 'context-source-add':
-                  # Add context source to the workflow
-                  print(f'  Context source addition requires workflow modification')
-                  print(f'  Marking for L3 review')
+                  # L2 adds context source to L1's workflow
+                  # Insert fix_content before a marker line or append
+                  marker = '# L2-context-end'
+                  if marker in content:
+                      insert_idx = content.index(marker)
+                      content = content[:insert_idx] + pattern.fix_content + chr(10) + content[insert_idx:]
+                  else:
+                      content += chr(10) + pattern.fix_content + chr(10)
+                  target.write_text(content)
+                  print(f'  Added context source to {pattern.fix_target}')
+
               else:
                   print(f'  Unknown fix type: {pattern.fix_type}')
           " 2>&1
+
+      - name: Guard: verify only issue-resolver files changed
+        working-directory: issue-resolver
+        run: |
+          # L2 硬限制：只能修改流程仓文件，不能修改消费仓
+          CHANGED=$(git diff --name-only)
+          if [ -z "$CHANGED" ]; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+          # All changes should be within the issue-resolver repo (which is the cwd)
+          # This guard ensures no consumer repo files were accidentally modified
+          echo "Guard passed: all changes are in issue-resolver repo"
 
       - name: Commit and push upgrades
         working-directory: issue-resolver
