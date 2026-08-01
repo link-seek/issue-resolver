@@ -184,7 +184,7 @@ jobs:
           MAX_ITERATIONS: ${{ steps.context.outputs.max_iterations }}
           FIX_CONTEXT: ${{ steps.context.outputs.fix_context }}
         run: |
-          AUTO_FIX_COUNT=$(git log --oneline --grep="^auto-fix:" | wc -l | tr -d ' ')
+          AUTO_FIX_COUNT=$(git log --oneline -15 | grep "auto-fix:" | wc -l | tr -d ' ')
           echo "auto_fix_count=$AUTO_FIX_COUNT" >> $GITHUB_OUTPUT
           echo "Auto-fix commits on branch: $AUTO_FIX_COUNT (max: $MAX_ITERATIONS)"
 
