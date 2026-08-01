@@ -242,7 +242,7 @@ jobs:
                   print(f'  Unknown fix type: {pattern.fix_type}')
           " 2>&1
 
-      - name: Guard: verify only issue-resolver files changed
+      - name: "Guard: verify only issue-resolver files changed"
         working-directory: issue-resolver
         run: |
           # L2 硬限制：只能修改流程仓文件，不能修改消费仓

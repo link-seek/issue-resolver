@@ -332,7 +332,7 @@ jobs:
           uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml \
             python ../issue-resolver-scripts/scripts/fix_pr.py
 
-      - name: Guard: reject workflow file changes (L1 hard limit)
+      - name: "Guard: reject workflow file changes (L1 hard limit)"
         if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
         working-directory: target-repo
         run: |
