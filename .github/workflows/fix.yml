@@ -180,6 +180,7 @@ jobs:
         working-directory: target-repo
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
           MAX_ITERATIONS: ${{ steps.context.outputs.max_iterations }}
           FIX_CONTEXT: ${{ steps.context.outputs.fix_context }}
@@ -203,6 +204,7 @@ jobs:
               -f "inputs[pr-number]=$PR_NUMBER" \
               -f "inputs[head-sha]=$HEAD_SHA" \
               --raw-field "inputs[ci-failures]=$FIX_CONTEXT" \
+              --header "Authorization: token $PAT_TOKEN" \
               || echo "Failed to dispatch L2 (capability-resolver may not exist yet)"
 
             BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮仍未通过。已触发 L2 (capability-resolver) 分析能力缺口并升级 L1。"

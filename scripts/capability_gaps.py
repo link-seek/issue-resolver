@@ -201,6 +201,27 @@ fi""",
         tech_stack=None,
         confidence=0.92,
     ),
+    Pattern(
+        name="empty-loop-dispatch",
+        match_keywords=["Max auto-fix iterations", "Fix already applied"],
+        match_all=True,
+        diagnosis=(
+            "review-ai dispatches L1 with hardcoded max_iterations (default 10), "
+            "but the PR already has 10+ auto-fix commits. L1 immediately hits "
+            "the limit. Fix: pr-review.yml should dynamically set max_iterations "
+            "based on existing auto-fix count (existing + 10)."
+        ),
+        fix_type="design-fix",
+        fix_target=".github/workflows/pr-review.yml",
+        fix_action="dynamic max_iterations = existing auto-fix count + 10",
+        fix_content=(
+            '-f max_iterations="${{ inputs.max-auto-fix-iterations }}" || echo "Failed to dispatch auto-fix"'
+            '>>>'
+            '-f max_iterations="$(gh api repos/$GITHUB_REPOSITORY/commits?sha=$HEAD_BRANCH\\&per_page=100 --jq \'[.[]|select(.commit.message|startswith(\"auto-fix:\"))]|length\' 2>/dev/null | tr -d \' \' || echo 0)" || echo "Failed to dispatch auto-fix"'
+        ),
+        tech_stack=None,
+        confidence=0.90,
+    ),
 ]
 
 
