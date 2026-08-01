@@ -351,7 +351,7 @@ jobs:
               -f pr_number="$PR_NUMBER" \
               -f head_branch="$HEAD_BRANCH" \
               -f head_sha="$HEAD_SHA" \
-              -f max_iterations="${{ inputs.max-auto-fix-iterations }}" || echo "Failed to dispatch auto-fix"
+              -f max_iterations="$(gh api repos/$GITHUB_REPOSITORY/commits?sha=$HEAD_BRANCH\&per_page=100 --jq '[.[]|select(.commit.message|startswith("auto-fix:"))]|length' 2>/dev/null | tr -d ' ' || echo 0)" || echo "Failed to dispatch auto-fix"
             # OCR blocking makes the job fail; CI-only failures don't block the job
             if [ "$OCR_BLOCKING" -gt 0 ]; then
               echo "::error::OCR review found $OCR_BLOCKING blocking issues"
